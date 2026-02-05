@@ -156,6 +156,36 @@ The `status` field summarizes availability:
 - `NUCCORE_ONLY`
 - `NONE`
 
+## Target regions (default)
+
+By default, FlyGuide’s NCBI download step targets:
+
+- **Organelle sequences:**
+  - Any mitochondrial sequences (genes or complete mitogenomes).
+  - Any plastid/chloroplast sequences (genes or complete plastomes).
+
+- **Nuclear markers:**
+  - 18S rRNA, 28S rRNA (SSU/LSU),
+  - ITS1, ITS2, 5.8S,
+  - histone H3.
+
+Internally this is implemented via an NCBI query of the form:
+
+- `Genus species[ORGN]`
+- `AND 50:400000[SLEN]`
+- `AND ( organelle terms OR nuclear marker terms )`
+- `NOT wgs[PROP] NOT tsa[PROP] NOT clone[Title] NOT UNVERIFIED[Title] NOT chromosome[Title] NOT PREDICTED[Title]`
+
+After download, records are categorised into:
+
+- `Mito`    – mitochondrial sequences,
+- `Plastid` – plastid/chloroplast sequences,
+- `NucMark` – 18S/28S/ITS/5.8S/H3,
+- `Other`   – everything else.
+
+These defaults are tuned for sedaDNA/metagenomic work but can be customised
+(see `flyguide/regions_config.tsv` below).
+
 ---
 
 ## Repository layout (within TackleBox)
