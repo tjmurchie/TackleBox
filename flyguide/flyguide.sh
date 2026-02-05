@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+FLYGUIDE_VERSION="0.1.0"
+
 # TackleBox: FlyGuide
 #
 # Build region-specific NCBI nucleotide reference panels from a GBIF download:
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       usage
+      exit 0
+      ;;
+    -V|--version)
+      echo "FlyGuide version ${FLYGUIDE_VERSION}"
       exit 0
       ;;
     -*)

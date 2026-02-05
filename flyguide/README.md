@@ -1,5 +1,7 @@
 # TackleBox: FlyGuide
 
+_Current module version: **0.1.0** (see Git tag `v0.1.0` for this release)_
+
 **FlyGuide** is a TackleBox module for building region‑specific NCBI nucleotide
 reference panels from GBIF downloads, with optional NCBI "coverage checks" via
 GuideCheck.
