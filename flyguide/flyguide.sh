@@ -4,34 +4,31 @@ set -euo pipefail
 # TackleBox: FlyGuide
 #
 # Build region-specific NCBI nucleotide reference panels from a GBIF download:
-#   1) Parse GBIF CSV/TSV → species/genus search list + species↔kingdom map.
-#   2) Download curated NCBI nucleotide records for those taxa.
-#   3) Split combined FASTA by kingdom + genome/marker type.
-#   4) Optionally run "GuideCheck" (guidecheck.sh) to summarize NCBI content
-#      for each query name.
+#   1) Parse GBIF CSV/TSV -> species/genus search list + species↔kingdom map.
+#   2) (Optional) run GuideCheck to summarize NCBI coverage per taxon.
+#   3) Download curated NCBI nucleotide records for those taxa.
+#   4) Split combined FASTA by kingdom + region class using regions_config.tsv.
 #
 # Usage:
-#   flyguide.sh [--no-guidecheck] GBIF_download.csv OUTPREFIX EMAIL [NCBI_API_KEY]
+#   flyguide.sh [--guidecheck] GBIF_download.csv OUTPREFIX EMAIL [NCBI_API_KEY]
 #
 # Examples:
-#   # Default: run full pipeline + GuideCheck
+#   # Fast path (no GuideCheck; default)
 #   ./flyguide.sh RegionX_GBIF.csv RegionX_refs you@example.org MY_NCBI_KEY
 #
-#   # Skip GuideCheck (faster, fewer API calls)
-#   ./flyguide.sh --no-guidecheck RegionX_GBIF.csv RegionX_refs you@example.org MY_NCBI_KEY
+#   # Enable GuideCheck (extra NCBI calls, more diagnostics)
+#   ./flyguide.sh --guidecheck RegionX_GBIF.csv RegionX_refs you@example.org MY_NCBI_KEY
 #
-# Requirements (on PATH / in env):
+# Requirements:
 #   - bash
-#   - python or python3 (for gbif_prep_from_csv.py)
-#   - Perl 5.x with Bio::DB::EUtilities (for NCBI-NT_Downloader.pl)
-#   - curl, jq, python3 (for guidecheck.sh)
-#
-# All helper scripts are expected to live next to this wrapper.
+#   - python3 (or \$PYTHON_BIN) for gbif_prep_from_csv.py
+#   - Perl + Bio::DB::EUtilities for NCBI-NT_Downloader.pl
+#   - curl, jq, python3 for guidecheck.sh (when --guidecheck is used)
 
 usage() {
   cat <<'EOF'
 Usage:
-  flyguide.sh [--no-guidecheck] GBIF_download.csv OUTPREFIX EMAIL [NCBI_API_KEY]
+  flyguide.sh [--guidecheck] GBIF_download.csv OUTPREFIX EMAIL [NCBI_API_KEY]
 
 Positional arguments:
   GBIF_download.csv   GBIF occurrence or checklist CSV/TSV
@@ -41,15 +38,16 @@ Positional arguments:
   NCBI_API_KEY        Optional NCBI API key (recommended)
 
 Options:
-  --no-guidecheck     Do NOT run GuideCheck (guidecheck.sh) on the species list
+  --guidecheck        Enable GuideCheck (runs guidecheck.sh on the species list).
+                      This adds a summary TSV with nuccore/SRA/assembly counts
+                      but increases runtime and NCBI calls.
+  --no-guidecheck     Explicitly disable GuideCheck (default behaviour).
   -h, --help          Show this help and exit
 
 Typical workflow:
-  1) Export a GBIF CSV for your region/taxa.
+  1) Export a GBIF CSV/TSV for your region/taxa.
   2) Run flyguide.sh as above.
-  3) Use the split FASTAs and the *_ncbi_guidecheck.tsv file as inputs to
-     downstream mapping / classifier tools.
-
+  3) Use the split FASTAs and optional *_ncbi_guidecheck.tsv in downstream tools.
 EOF
 }
 
@@ -58,7 +56,8 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
-RUN_GUIDECHECK=1
+# Default: GuideCheck OFF (user has to opt in with --guidecheck)
+RUN_GUIDECHECK=0
 
 GBIF_CSV=""
 OUTPREFIX=""
@@ -68,6 +67,10 @@ API_KEY=""
 # Parse flags + positional args
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --guidecheck)
+      RUN_GUIDECHECK=1
+      shift
+      ;;
     --no-guidecheck)
       RUN_GUIDECHECK=0
       shift
@@ -115,12 +118,13 @@ GBIF_PREP="${SCRIPT_DIR}/gbif_prep_from_csv.py"
 NCBI_DL="${SCRIPT_DIR}/NCBI-NT_Downloader.pl"
 SPLIT_FASTA="${SCRIPT_DIR}/split_fasta_by_kingdom_organelle_simple.pl"
 GUIDECHECK="${SCRIPT_DIR}/guidecheck.sh"
+REGIONS_CONF="${SCRIPT_DIR}/regions_config.tsv"
 
 # Basic checks
-[[ -f "$GBIF_CSV" ]] || { echo "ERROR: GBIF CSV not found: $GBIF_CSV" >&2; exit 1; }
-[[ -f "$GBIF_PREP" ]] || { echo "ERROR: gbif_prep_from_csv.py not found in $SCRIPT_DIR" >&2; exit 1; }
-[[ -f "$NCBI_DL" ]] || { echo "ERROR: NCBI-NT_Downloader.pl not found in $SCRIPT_DIR" >&2; exit 1; }
-[[ -f "$SPLIT_FASTA" ]] || { echo "ERROR: split_fasta_by_kingdom_organelle_simple.pl not found in $SCRIPT_DIR" >&2; exit 1; }
+[[ -f "$GBIF_CSV" ]]   || { echo "ERROR: GBIF CSV not found: $GBIF_CSV" >&2; exit 1; }
+[[ -f "$GBIF_PREP" ]]  || { echo "ERROR: gbif_prep_from_csv.py not found in $SCRIPT_DIR" >&2; exit 1; }
+[[ -f "$NCBI_DL" ]]    || { echo "ERROR: NCBI-NT_Downloader.pl not found in $SCRIPT_DIR" >&2; exit 1; }
+[[ -f "$SPLIT_FASTA" ]]|| { echo "ERROR: split_fasta_by_kingdom_organelle_simple.pl not found in $SCRIPT_DIR" >&2; exit 1; }
 
 if [[ "$RUN_GUIDECHECK" -eq 1 ]]; then
   if [[ ! -f "$GUIDECHECK" ]]; then
@@ -165,7 +169,6 @@ if [[ "$RUN_GUIDECHECK" -eq 1 ]]; then
   echo "=== Step 1.5: Running GuideCheck (NCBI coverage summary) ==="
   GUIDE_OUT="${OUTPREFIX}_ncbi_guidecheck.tsv"
 
-  # Build args for guidecheck.sh
   GUIDECHECK_ARGS=( -i "$SPECIES_LIST" -o "$GUIDE_OUT" )
   if [[ -n "$API_KEY" ]]; then
     GUIDECHECK_ARGS+=( --api-key "$API_KEY" )
@@ -198,11 +201,16 @@ if [[ ! -s "$FASTA_OUT" ]]; then
 fi
 
 ###############################################################################
-# Step 3: Split FASTA by kingdom + genome/marker type
+# Step 3: Split FASTA by kingdom + region class
 ###############################################################################
 
-echo "=== Step 3: Splitting FASTA by kingdom + genome/marker type ==="
-perl "$SPLIT_FASTA" "$FASTA_OUT" "$OUTPREFIX" "$SPECIES_KINGDOM"
+echo "=== Step 3: Splitting FASTA by kingdom + region class ==="
+if [[ -f "$REGIONS_CONF" ]]; then
+  perl "$SPLIT_FASTA" "$FASTA_OUT" "$OUTPREFIX" "$SPECIES_KINGDOM" "$REGIONS_CONF"
+else
+  echo "WARNING: regions_config.tsv not found in $SCRIPT_DIR; using splitter defaults." >&2
+  perl "$SPLIT_FASTA" "$FASTA_OUT" "$OUTPREFIX" "$SPECIES_KINGDOM"
+fi
 
 echo "=== FlyGuide pipeline complete ==="
 echo "Key outputs (in current working directory):"
@@ -212,4 +220,4 @@ echo "  Combined FASTA from NCBI      : $FASTA_OUT"
 if [[ "$RUN_GUIDECHECK" -eq 1 ]]; then
   echo "  NCBI coverage summary (TSV)   : ${OUTPREFIX}_ncbi_guidecheck.tsv"
 fi
-echo "  Split FASTAs (kingdom/type)   : ${OUTPREFIX}.<Kingdom>-<Type>.fasta"
+echo "  Split FASTAs (kingdom/class)  : ${OUTPREFIX}.<Kingdom>-<Class>.fasta"

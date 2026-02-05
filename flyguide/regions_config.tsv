@@ -1,0 +1,9 @@
+region_id	class	enabled_default	regex	ncbi_title_clause
+MITO	Mito	1	mitochondrion|mitochondrial|\[location=mitochondrion\]	
+PLASTID	Plastid	1	chloroplast|plastid|plastome|\[location=(chloroplast|plastid)\]	
+NUCRDNA_18S	NucMark	1	\b18S(\s+ribosomal\s+RNA|\s+rRNA)?\b|small\s+subunit\s+ribosomal|SSU\s+rRNA	"18S ribosomal RNA"[Title] OR 18S[Title] OR "small subunit ribosomal"[Title] OR "SSU rRNA"[Title]
+NUCRDNA_28S	NucMark	1	\b28S(\s+ribosomal\s+RNA|\s+rRNA)?\b|large\s+subunit\s+ribosomal|LSU\s+rRNA	"28S ribosomal RNA"[Title] OR 28S[Title] OR "large subunit ribosomal"[Title] OR "LSU rRNA"[Title]
+NUCRDNA_ITS	NucMark	1	\bITS1\b|\bITS2\b|internal\s+transcribed\s+spacer|5\.8S(\s+ribosomal\s+RNA|\s+rRNA)?	ITS1[Title] OR ITS2[Title] OR "internal transcribed spacer"[Title] OR "5.8S ribosomal RNA"[Title] OR "5.8S rRNA"[Title]
+NUC_H3	NucMark	1	histone\s+H3\b|\bH3\b	"histone H3"[Title] OR H3[Title]
+COI	Mito	0	\bCOI\b|\bCO1\b|\bcox1\b|\bCOX1\b	COI[Title] OR CO1[Title] OR cox1[Title] OR COX1[Title] OR "cytochrome c oxidase subunit I"[Title]
+OTHER	Other	1	.*	
