@@ -232,7 +232,7 @@ These nuclear markers are matched via `[Title]` terms while still applying the
 same length and filtering constraints (`50–400,000 bp`, no WGS/TSA/clone/UNVERIFIED/
 chromosome/PREDICTED).
 
-So **yes**: both full organelle genomes and single organelle genes are retrieved
+So both full organelle genomes and single organelle genes are retrieved
 under the default settings.
 
 ### Configurable marker set: `regions_config.tsv`
@@ -500,7 +500,7 @@ For reproducibility in publications:
 
 Example citation text (to be adapted once a DOI exists):
 
-> TackleBox: FlyGuide v0.2.0 — a GBIF‑driven NCBI reference builder for
+> TackleBox: FlyGuide v0.1.0 — a GBIF‑driven NCBI reference builder for
 > metagenomic and sedimentary ancient DNA studies. Available at:
 > https://github.com/USER/TackleBox (commit `abcdef1`).
 
