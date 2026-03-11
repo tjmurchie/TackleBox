@@ -1,6 +1,10 @@
 # TackleBox: FlyGuide
 
-_Current module version: **0.1.0** (see Git tag `v0.1.0` for this release)_
+<p align="center">
+  <img src="../assets/TackleBox-FlyGuide.png" alt="TackleBox: FlyGuide header" width="700">
+</p>
+
+_Current module version: **1.0.0** (see Git tag `v1.0.0` for this release)_
 
 **FlyGuide** is a TackleBox module for building region‑specific NCBI nucleotide
 reference panels from GBIF downloads, with optional NCBI "coverage checks" via
@@ -493,14 +497,14 @@ TackleBox/
 
 For reproducibility in publications:
 
-- Tag releases in Git (e.g. `v0.2.0`) once a configuration is stable.
+- Tag releases in Git (e.g. `v1.0.0`) once a configuration is stable.
 - In manuscripts, cite both:
   - The TackleBox/FlyGuide paper (when available), and
   - The specific Git tag or commit hash used.
 
 Example citation text (to be adapted once a DOI exists):
 
-> TackleBox: FlyGuide v0.2.0 — a GBIF‑driven NCBI reference builder for
+> TackleBox: FlyGuide v1.0.0 — a GBIF‑driven NCBI reference builder for
 > metagenomic and sedimentary ancient DNA studies. Available at:
 > https://github.com/USER/TackleBox (commit `abcdef1`).
 

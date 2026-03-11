@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FLYGUIDE_VERSION="0.1.0"
+FLYGUIDE_VERSION="1.0.0"
 
 # TackleBox: FlyGuide
 #

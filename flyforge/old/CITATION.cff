@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+date-released: 2025-01-01
+version: 1.0.0
+message: "If you use FlyForge in your research, please cite this software and the CARPDM publication for the oligo pool synthesis methodology."
+repository-code: "https://github.com/TylerMurchwordie/FlyForge"
+title: "TackleBox: FlyForge - Comprehensive bait/probe designer for hybridization capture enrichment"
+license: MIT
+authors:
+  - family-names: "Murchie"
+    given-names: "Tyler J."
+references:
+  - type: article
+    title: "CARPDM: cost-effective antibiotic resistome profiling of metagenomic samples using targeted enrichment"
+    authors:
+      - family-names: "Hackenberger"
+        given-names: "D"
+      - family-names: "Imtiaz"
+        given-names: "H"
+      - family-names: "Raphenya"
+        given-names: "AR"
+      - family-names: "Smith"
+        given-names: "KW"
+      - family-names: "Alcock"
+        given-names: "BP"
+      - family-names: "Poinar"
+        given-names: "HN"
+      - family-names: "Wright"
+        given-names: "GD"
+      - family-names: "McArthur"
+        given-names: "AG"
+    journal: "bioRxiv"
+    year: 2024
+    doi: "10.1101/2024.03.27.587061"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# TackleBox: FlyForge v1.1.0
+#
+# Comprehensive bait/probe designer for hybridization capture enrichment
+# with integrated support for in-house RNA probe synthesis via oligo pools.
+#
+# Author:  Tyler J. Murchie
+# Created with assistance from Claude (Anthropic) and ChatGPT 5.4 (OpenAI).
+# License: MIT
+#
+# Usage: FlyForge [options]
+#   Run 'FlyForge --help' for full usage information.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$SCRIPT_DIR/FlyForge.py" "$@"
