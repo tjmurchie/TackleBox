@@ -2,10 +2,11 @@
 
 **FlyForgeAudit** is the companion analysis and augmentation module for **FlyForge**.
 
-It has two modes:
+It has three modes:
 
 - `audit` — evaluate an **existing bare bait set** against one or more references and reproduce FlyForge-style validation outputs
 - `augment` — start from an **existing bait set** plus **new target references**, then design the **minimal additional bait set** needed to bring those new targets up to the requested coverage threshold
+- `opool` — take an **existing bare bait set exactly as-is** and emit the **order-ready oligo-pool FASTA** plus amplification primers without redesigning or filtering the input bait sequences
 
 ## Why this exists
 
@@ -17,6 +18,7 @@ FlyForgeAudit answers the next practical questions:
 - *Where are the coverage gaps?*
 - *Are there obvious off-target hits against organisms I want to avoid?*
 - *How many extra baits do I actually need to spike in for a new organism set?*
+- *Can I turn an already-designed bait panel into a CARPDM/FlyForge oligo pool without redesigning it?*
 
 ## Important input rule
 
@@ -28,6 +30,8 @@ Use:
 - or another FASTA containing just the bait sequences
 
 Do **not** give it an oligo-pool FASTA that already includes the T7 and amplification-primer tails.
+
+The new `opool` mode is the exception to the “analysis only” rule: it still expects a **bare-bait FASTA** as input, but it then writes the order-ready oligo pool for that exact panel rather than auditing coverage.
 
 Coverage note: FlyForgeAudit now assigns each bait **one primary on-target placement**. If bait IDs encode trusted design coordinates, it uses those positions directly for coverage accounting so repetitive regions do not create false stacked-depth spikes. When coordinate metadata is absent, it falls back to the best-supported primary BLAST placement.
 
@@ -135,6 +139,44 @@ FlyForgeAudit augment \
 - `PREFIX_summary.tsv`
 
 ---
+
+## Mode 3: opool
+
+### What it does
+
+- reads an **existing bare-bait FASTA**
+- preserves the bait sequences **exactly as supplied**
+- runs the standard FlyForge/CARPDM oligo-pool primer-selection logic
+- writes:
+  - the copied bare-bait FASTA
+  - the generated oligo-pool FASTA
+  - the amplification-primer FASTA
+  - a summary and recommendations file
+
+### Example
+
+```bash
+FlyForgeAudit opool \
+  --baits existing_panel.fa \
+  --prefix existing_panel_order \
+  --output-dir opool_out
+```
+
+### opool outputs
+
+- `PREFIX_final_baits.fa` — copy of the supplied bare-bait panel
+- `PREFIX_probes.fna` — bare probes used to build the oligo pool
+- `PREFIX_oligo_pool.fna` — order-ready oligo pool
+- `PREFIX_amplification_primers.fna` — amplification primer pair
+- `PREFIX_probe_info.csv` — per-probe GC/Tm/LguI-site review table
+- `PREFIX_recommendations.tsv` and `PREFIX_recommendations.txt`
+- `PREFIX_summary.tsv`
+- `PREFIX_progress.log`
+
+### opool note
+
+`opool` does **not** redesign, filter, or add baits. It simply converts the supplied panel into the CARPDM/FlyForge oligo-pool structure and reports any obvious compatibility warnings, such as internal BspQI/LguI motifs in the input bait sequences.
+
 
 ## Coverage logic in augment mode
 

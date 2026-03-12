@@ -191,4 +191,5 @@ If you use FlyForge, cite this software and the CARPDM publication that establis
 ## Recent updates
 - Circular targets can now be enabled with `--circular` (all references) or `--circular-ids ref1,ref2` (selected references). This is useful for mitochondrial, plastid, viral, plasmid, and other circular genomes so baits can wrap across the linearized ends.
 - FlyForgeAudit now distinguishes **actionable flags** from **informational notes** in the terminal summary and prints the recommendation text directly at the end of the run.
+- FlyForgeAudit now includes an `opool` mode that converts an existing bare-bait FASTA directly into an order-ready oligo pool and amplification-primer FASTA without redesigning the panel.
 - FlyForgeAudit now uses a FlyForge-style progress dashboard so the current step, elapsed time, ETA, and completed stages are visible during audit and augment runs.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TackleBox: FlyForgeAudit v1.0.0
+TackleBox: FlyForgeAudit v1.2.0
 
 Companion post-design auditing and panel-augmentation module for FlyForge.
 
@@ -17,6 +17,11 @@ augment
     design the minimal additional bait set needed to meet the requested coverage
     threshold, screen those new baits against the existing panel, and emit both
     the extra bare-bait FASTA and an order-ready oligo-pool FASTA.
+
+opool
+    Take an existing bare bait FASTA exactly as-is, add the CARPDM/FlyForge
+    oligo-pool primer structure without redesigning the baits, and emit the
+    order-ready oligo pool plus amplification-primer FASTA.
 
 Author: Tyler J. Murchie
 Created with assistance from Claude (Anthropic) and ChatGPT 5.4 (OpenAI).
@@ -48,7 +53,7 @@ from Bio.Seq import Seq
 
 import FlyForge as ff
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 # ============================================================================
@@ -189,6 +194,68 @@ def infer_bait_length_from_panel(baits: List[ff.Bait]) -> int:
             + ", ".join(str(x) for x in lengths)
         )
     return lengths[0]
+
+
+def build_opool_only_recommendations(probe_info: pd.DataFrame, bait_count: int, output_tsv: str, output_txt: str) -> pd.DataFrame:
+    recs: List[dict] = []
+
+    if not probe_info.empty:
+        lgui = probe_info.loc[probe_info.get("contains_lgui_site", 0) == 1]
+        low_tm = probe_info.loc[probe_info["tm"] < 50]
+        high_gc = probe_info.loc[(probe_info["gc"] > 0.8) | (probe_info["gc"] < 0.2)]
+
+        if len(lgui) > 0:
+            examples = ", ".join(lgui["probe_id"].astype(str).head(5))
+            recs.append(
+                {
+                    "severity": "high",
+                    "category": "opool_compatibility",
+                    "target": "panel",
+                    "recommendation": "Review input probes containing internal BspQI/LguI motifs before ordering; the input bait sequences were not modified.",
+                    "evidence": f"{len(lgui)} / {bait_count} probes contain {ff.BSPQI_SITE_FWD} or {ff.BSPQI_SITE_REV}. Examples: {examples}",
+                }
+            )
+        if len(low_tm) > 0:
+            recs.append(
+                {
+                    "severity": "medium",
+                    "category": "thermodynamics",
+                    "target": "panel",
+                    "recommendation": "Review low-Tm probes if you expect stringent capture conditions; opool mode does not redesign or filter the input panel.",
+                    "evidence": f"{len(low_tm)} / {bait_count} probes have Tm < 50 C",
+                }
+            )
+        if len(high_gc) > 0:
+            recs.append(
+                {
+                    "severity": "low",
+                    "category": "gc_outliers",
+                    "target": "panel",
+                    "recommendation": "Inspect extreme GC-content probes for synthesis or capture bias risk; opool mode preserves the panel exactly as supplied.",
+                    "evidence": f"{len(high_gc)} / {bait_count} probes fall outside 20%-80% GC",
+                }
+            )
+
+    if not recs:
+        recs.append(
+            {
+                "severity": "info",
+                "category": "no_action",
+                "target": "panel",
+                "recommendation": "Input bait panel was converted to an oligo pool without modifying the supplied bait sequences.",
+                "evidence": "No major opool-compatibility warnings were detected under the default review rules.",
+            }
+        )
+
+    df = pd.DataFrame(recs)
+    df.to_csv(output_tsv, sep="\t", index=False)
+    with open(output_txt, "w") as out:
+        out.write("# FlyForgeAudit opool recommendations\n")
+        for row in df.itertuples(index=False):
+            out.write(
+                f"- [{row.severity}] {row.category} | {row.target} | {row.recommendation} | {row.evidence}\n"
+            )
+    return df
 
 
 def prepare_targets(
@@ -692,11 +759,13 @@ def write_summary(
         for key, value in params.items():
             out.write(f"# {key}\t{value}\n")
         out.write("# ===== Headline metrics =====\n")
+        mean_prop = target_info["proportion_covered"].mean() if (not target_info.empty and "proportion_covered" in target_info.columns) else 0.0
+        mean_depth = target_info["mean_depth"].mean() if (not target_info.empty and "mean_depth" in target_info.columns) else 0.0
         out.write(
             f"targets\t{len(target_info)}\n"
             f"panel_baits\t{len(probe_info)}\n"
-            f"mean_prop_covered\t{target_info['proportion_covered'].mean() if not target_info.empty else 0.0:.6f}\n"
-            f"mean_depth\t{target_info['mean_depth'].mean() if not target_info.empty else 0.0:.6f}\n"
+            f"mean_prop_covered\t{mean_prop:.6f}\n"
+            f"mean_depth\t{mean_depth:.6f}\n"
             f"n_recommendations\t{len(recommendations)}\n"
             f"actionable_flags\t{actionable_flags}\n"
             f"informational_notes\t{informational_notes}\n"
@@ -1368,6 +1437,113 @@ def run_augment(args) -> None:
     )
     log_handle.close()
 
+def run_opool(args) -> None:
+    os.makedirs(args.output_dir, exist_ok=True)
+    log_path = os.path.join(args.output_dir, f"{args.prefix}_progress.log")
+    log, log_handle = log_factory(log_path)
+    t_start = time.time()
+
+    steps = ["preprocessing", "opool_design", "write_output"]
+    progress = ff.ProgressTracker(steps, log, t_start)
+
+    log(f"TackleBox: FlyForgeAudit v{__version__} — opool mode")
+    bait_objs = read_baits_as_objects(args.baits)
+    bait_length = infer_bait_length_from_panel(bait_objs)
+
+    progress.start_step("preprocessing")
+    panel_fasta = os.path.join(args.output_dir, f"{args.prefix}_final_baits.fa")
+    write_baits_fasta(panel_fasta, bait_objs)
+    probe_rows = []
+    for bait in bait_objs:
+        seq = bait.seq.upper()
+        probe_rows.append(
+            {
+                "probe_id": bait.bait_id,
+                "gc": SeqUtils.gc_fraction(seq),
+                "tm": ff.compute_tm(seq),
+                "num_targets": 0,
+                "sequence": seq,
+                "contains_lgui_site": int(ff.BSPQI_SITE_FWD in seq or ff.BSPQI_SITE_REV in seq),
+            }
+        )
+    probe_info = pd.DataFrame(probe_rows)
+    progress.finish_step("preprocessing", details=f"{len(bait_objs)} bare baits prepared")
+
+    progress.start_step("opool_design")
+    oligo_pool_path, bare_probes_path, primer_fasta_path, primer_seq = ff.design_opool(
+        bait_objs,
+        args.output_dir,
+        args.prefix,
+        log,
+    )
+    progress.finish_step("opool_design", details=f"Oligo pool written: {os.path.basename(oligo_pool_path)}")
+
+    rec_tsv = os.path.join(args.output_dir, f"{args.prefix}_recommendations.tsv")
+    rec_txt = os.path.join(args.output_dir, f"{args.prefix}_recommendations.txt")
+    recommendations = build_opool_only_recommendations(
+        probe_info,
+        bait_count=len(bait_objs),
+        output_tsv=rec_tsv,
+        output_txt=rec_txt,
+    )
+
+    progress.start_step("write_output")
+    probe_info.to_csv(os.path.join(args.output_dir, f"{args.prefix}_probe_info.csv"), index=False)
+    actionable_flags, informational_notes = summarize_recommendations(recommendations)
+    summary_path = os.path.join(args.output_dir, f"{args.prefix}_summary.tsv")
+    params = {
+        "mode": "opool",
+        "baits": args.baits,
+        "bait_length": bait_length,
+        "preserve_input_baits": True,
+        "oligo_pool_fasta": oligo_pool_path,
+        "bare_probes_fasta": bare_probes_path,
+        "amplification_primers_fasta": primer_fasta_path,
+        "amplification_primer": primer_seq,
+    }
+    extra_lines = [
+        f"oligo_pool_fasta\t{oligo_pool_path}",
+        f"bare_probes_fasta\t{bare_probes_path}",
+        f"amplification_primers_fasta\t{primer_fasta_path}",
+        f"amplification_primer\t{primer_seq}",
+        f"baits_with_internal_lgui_sites\t{int((probe_info['contains_lgui_site'] == 1).sum())}",
+    ]
+    write_summary(
+        summary_path,
+        "opool",
+        params,
+        pd.DataFrame(),
+        probe_info,
+        recommendations,
+        extra_lines=extra_lines,
+    )
+    rec_lines = format_recommendation_lines(recommendations)
+    progress.finish_step("write_output", details="opool reports written")
+
+    elapsed = ff.format_duration(time.time() - t_start)
+    print(
+        "\n" + "=" * 72 + "\n"
+        f"  TackleBox: FlyForgeAudit v{__version__} — Oligo-Pool Summary\n"
+        + "=" * 72 + "\n"
+        f"  Input bare baits:        {len(bait_objs):,d}\n"
+        f"  Bait length:             {bait_length} nt\n"
+        f"  Oligo pool FASTA:        {os.path.basename(oligo_pool_path)}\n"
+        f"  Primer FASTA:            {os.path.basename(primer_fasta_path)}\n"
+        f"  Amplification primer:    {primer_seq}\n"
+        f"  Actionable flags:        {actionable_flags:,d}\n"
+        f"  Informational notes:     {informational_notes:,d}\n"
+        + "-" * 72 + "\n"
+        + "  Recommendations\n"
+        + "\n".join(rec_lines) + "\n"
+        + "-" * 72 + "\n"
+        + f"  Output directory:        {args.output_dir}\n"
+        + f"  Runtime:                 {elapsed}\n"
+        + "=" * 72,
+        file=sys.stderr,
+    )
+    log_handle.close()
+
+
 def add_shared_filtering_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bait-length", type=int, default=None,
                         help="Expected bait length. In audit mode this is inferred from the panel if omitted.")
@@ -1427,7 +1603,7 @@ def add_shared_filtering_args(parser: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="TackleBox: FlyForgeAudit - audit and augment existing bait panels.",
+        description="TackleBox: FlyForgeAudit - audit, augment, or oligo-poolize existing bait panels.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1438,6 +1614,10 @@ Examples:
   # Add the minimal extra bait set needed to cover new organisms
   FlyForgeAudit augment --existing-baits existing_panel.fa --new-targets new_refs/*.fasta \
     --prefix panel_spikein --output-dir spikein_out --min-existing-coverage 1 --threads 8
+
+  # Convert an existing bare-bait FASTA directly into an order-ready oligo pool
+  FlyForgeAudit opool --baits existing_panel.fa \
+    --prefix existing_panel_order --output-dir opool_out
         """,
     )
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -1464,6 +1644,11 @@ Examples:
                          help="Skip order-ready extra oligo-pool generation.")
     add_shared_filtering_args(augment)
 
+    opool = sub.add_parser("opool", help="Convert an existing bare-bait panel directly into an order-ready oligo pool.")
+    opool.add_argument("--baits", required=True, help="Existing bare-bait FASTA (no oligo-pool primers).")
+    opool.add_argument("--prefix", required=True, help="Prefix for output files.")
+    opool.add_argument("--output-dir", default="flyforge_opool_output", help="Output directory.")
+
     ap.add_argument("-v", "--version", action="version",
                     version=f"TackleBox: FlyForgeAudit v{__version__}")
     args = ap.parse_args()
@@ -1472,6 +1657,8 @@ Examples:
         run_audit(args)
     elif args.mode == "augment":
         run_augment(args)
+    elif args.mode == "opool":
+        run_opool(args)
     else:
         raise RuntimeError(f"Unsupported mode: {args.mode}")
 

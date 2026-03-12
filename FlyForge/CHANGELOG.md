@@ -1,6 +1,9 @@
 # Changelog
 
-## FlyForge v1.2.0 / FlyForgeAudit v1.1.0
+## FlyForge v1.2.0 / FlyForgeAudit v1.2.0
+- added a third `opool` mode to FlyForgeAudit so an existing bare-bait FASTA can be converted directly into an order-ready oligo pool without redesigning the panel
+- `opool` writes a copied bait FASTA, the generated oligo-pool FASTA, amplification primers, probe QC table, recommendations, summary, and progress log
+- `opool` summaries distinguish actionable flags from informational notes and report compatibility warnings such as internal BspQI/LguI motifs in the input bait set
 - added actionable-flags vs informational-notes reporting in FlyForgeAudit terminal summaries and summary TSVs
 - printed recommendation text directly in the end-of-run FlyForgeAudit console summary
 - added FlyForge-style progress dashboards to FlyForgeAudit audit and augment modes
