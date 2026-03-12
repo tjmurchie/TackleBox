@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TackleBox: FlyForge v1.1.0
+TackleBox: FlyForge v1.2.0
 
 Comprehensive bait/probe designer for hybridization capture enrichment
 with integrated support for in-house RNA probe synthesis via oligo pools.
@@ -64,7 +64,7 @@ from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 from tqdm import tqdm
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -526,8 +526,13 @@ def compute_tm(seq: str) -> float:
 
 def tile_sequence(ref_id: str, seq: str, bait_len: int = 80,
                   tiling_density: float = 3.0, omit_short_leq: int = 70,
-                  pad_min: int = 71) -> List[Bait]:
-    """Generate tiled baits from a (softmasked) reference sequence."""
+                  pad_min: int = 71, circular: bool = False) -> List[Bait]:
+    """Generate tiled baits from a (softmasked) reference sequence.
+
+    When ``circular`` is True, windows are allowed to wrap across the
+    end/start boundary so circular genomes (for example mitochondria) do not
+    lose enrichment at the linearized termini.
+    """
     baits: List[Bait] = []
     L = len(seq)
     if L <= omit_short_leq:
@@ -548,14 +553,21 @@ def tile_sequence(ref_id: str, seq: str, bait_len: int = 80,
         return baits
 
     step = max(1, int(round(bait_len / tiling_density)))
-    starts = list(range(0, L - bait_len + 1, step))
-    last_start = L - bait_len
-    if starts[-1] != last_start:
-        starts.append(last_start)
-    starts = sorted(set(starts))
+    if circular:
+        starts = list(range(0, L, step))
+    else:
+        starts = list(range(0, L - bait_len + 1, step))
+        last_start = L - bait_len
+        if starts[-1] != last_start:
+            starts.append(last_start)
+        starts = sorted(set(starts))
 
     for idx, start in enumerate(starts, start=1):
-        frag = seq[start:start + bait_len]
+        if circular and start + bait_len > L:
+            wrap = (start + bait_len) - L
+            frag = seq[start:] + seq[:wrap]
+        else:
+            frag = seq[start:start + bait_len]
         gc_frac, masked_frac, ambiguous = compute_bait_metrics(frag)
         bait_id = f"{ref_id}|b{idx}|pos{start+1}-{start + bait_len}"
         baits.append(Bait(
@@ -1200,6 +1212,20 @@ def resolve_ref_hint_to_target(ref_hint: Optional[str], target_ids: List[str]) -
     return target_ids[0] if len(target_ids) == 1 else None
 
 
+def parse_circular_id_set(circular_ids_arg: Optional[str], available_ids: List[str]) -> Set[str]:
+    """Resolve a comma-delimited set of reference IDs to treat as circular."""
+    if not circular_ids_arg:
+        return set()
+    requested = [tok.strip() for tok in str(circular_ids_arg).split(',') if tok.strip()]
+    resolved: Set[str] = set()
+    for token in requested:
+        match = resolve_ref_hint_to_target(token, available_ids)
+        if match is None:
+            raise RuntimeError(f"Could not resolve circular reference identifier: {token}")
+        resolved.add(match)
+    return resolved
+
+
 def infer_trusted_probe_metadata(
     probe_records: List[SeqRecord],
     target_lengths: Dict[str, int],
@@ -1292,7 +1318,7 @@ def pick_primary_hit(valid_hits: List[Dict[str, object]], probe_meta: Optional[D
 
 def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
                      prefix: str, probe_length: int,
-                     log_fn) -> Dict[str, np.ndarray]:
+                     log_fn, circular_refs: Optional[Set[str]] = None) -> Dict[str, np.ndarray]:
     """BLAST probes against design targets and write analysis tables/plots.
 
     Coverage assignment is conservative: each probe contributes at most one
@@ -1307,11 +1333,27 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
             'coverage analysis.'
         )
 
+    circular_refs = set(circular_refs or set())
+    design_records = list(SeqIO.parse(design_fasta, 'fasta'))
+    original_lengths = {record.id: len(record.seq) for record in design_records}
+
+    blast_subject = design_fasta
+    if circular_refs:
+        extension = max(0, probe_length - 1)
+        extended_records = []
+        for record in design_records:
+            seq = str(record.seq)
+            if record.id in circular_refs and extension > 0 and len(seq) > 0:
+                seq = seq + seq[:extension]
+            extended_records.append((record.id, seq))
+        blast_subject = os.path.join(output_dir, f'{prefix}_validation_targets_for_blast.fna')
+        write_fasta(blast_subject, extended_records)
+
     blast_xml = os.path.join(output_dir, f'{prefix}_final_blast.xml')
     cmd = [
         'blastn',
         '-query', probe_fasta,
-        '-subject', design_fasta,
+        '-subject', blast_subject,
         '-out', blast_xml,
         '-outfmt', '5',
         '-dust', 'no',
@@ -1325,15 +1367,14 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
     probe_target_sets: Dict[str, Set[str]] = defaultdict(set)
     target_count_dict: Dict[str, int] = {}
 
-    design_records = list(SeqIO.parse(design_fasta, 'fasta'))
     probe_records = list(SeqIO.parse(probe_fasta, 'fasta'))
     target_ids = [record.id for record in design_records]
-    target_lengths = {record.id: len(record.seq) for record in design_records}
+    target_lengths = dict(original_lengths)
     trusted_meta = infer_trusted_probe_metadata(probe_records, target_lengths)
 
     for record in design_records:
         name = record.id
-        coverage_dict[name] = np.zeros(len(record.seq), dtype=float)
+        coverage_dict[name] = np.zeros(original_lengths[name], dtype=float)
         gc_dict[name] = SeqUtils.gc_fraction(record.seq)
         target_seq_dict[name] = str(record.seq)
         target_count_dict[name] = 0
@@ -1384,16 +1425,21 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
                     assigned_target = str(primary['target'])
                     match_array = hsp_to_match_array(primary['hsp'])
                     target_len = coverage_dict[assigned_target].size
-                    pad_left = int(primary['subject_start']) - 1
-                    pad_right = target_len - (pad_left + match_array.size)
-                    if pad_right >= 0:
-                        padded = np.pad(
-                            match_array,
-                            (pad_left, pad_right),
-                            mode='constant',
-                            constant_values=(0, 0),
-                        )
-                        coverage_dict[assigned_target] += padded
+                    if assigned_target in circular_refs:
+                        start1 = int(primary['subject_start'])
+                        end1 = start1 + int(match_array.size) - 1
+                        apply_interval_coverage(coverage_dict[assigned_target], start1, end1)
+                    else:
+                        pad_left = int(primary['subject_start']) - 1
+                        pad_right = target_len - (pad_left + match_array.size)
+                        if pad_right >= 0:
+                            padded = np.pad(
+                                match_array,
+                                (pad_left, pad_right),
+                                mode='constant',
+                                constant_values=(0, 0),
+                            )
+                            coverage_dict[assigned_target] += padded
 
             if assigned_target is not None:
                 pair = (assigned_target, probe)
@@ -1680,6 +1726,10 @@ def run_pipeline(args):
     else:
         log(f"Using tiling density {used_tiling_density}.")
 
+    circular_ids = set(lengths_dict.keys()) if args.circular else parse_circular_id_set(args.circular_ids, list(lengths_dict.keys()))
+    if circular_ids:
+        log("Circular tiling enabled for: " + ", ".join(sorted(circular_ids)))
+
     # ===== 4. Self-repeat softmasking =====
     if args.skip_self_mask:
         masked_seqs = all_seqs
@@ -1698,7 +1748,8 @@ def run_pipeline(args):
         baits = tile_sequence(
             ref_id, seq, bait_len=args.bait_length,
             tiling_density=used_tiling_density,
-            omit_short_leq=args.omit_short_leq, pad_min=args.pad_min)
+            omit_short_leq=args.omit_short_leq, pad_min=args.pad_min,
+            circular=(ref_id in circular_ids))
         all_baits.extend(baits)
         ref_baits_after_tiling[ref_id] = baits
         rs = ref_stats.get(ref_id)
@@ -1872,7 +1923,8 @@ def run_pipeline(args):
     input_fasta_path = args.input[0]  # Use first input for validation
     blast_validation(bare_probes_path, input_fasta_path,
                      args.output_dir, args.prefix,
-                     args.bait_length, log)
+                     args.bait_length, log,
+                     circular_refs=circular_ids)
 
     target_csv = os.path.join(args.output_dir, f'{args.prefix}_target_info.csv')
     try:
@@ -1951,6 +2003,8 @@ def run_pipeline(args):
             "ambiguous_cutoff": args.ambiguous_cutoff,
             "max_masked_frac": args.max_masked_frac,
             "min_tm": args.min_tm,
+            "circular": args.circular,
+            "circular_ids": ",".join(sorted(circular_ids)) if circular_ids else "N/A",
             "repeat_k": args.repeat_k,
             "repeat_threshold": args.repeat_threshold,
             "skip_self_mask": args.skip_self_mask,
@@ -2037,6 +2091,7 @@ def run_pipeline(args):
         f"    Bait length:             {args.bait_length} bp",
         f"    Tiling density:          {used_tiling_density:.2f}x  (step size: {max(1, int(round(args.bait_length / used_tiling_density)))} bp)",
         f"    Min melting temp:        {args.min_tm} C" if args.min_tm > 0 else f"    Min melting temp:        off",
+        f"    Circular tiling:         {'yes' if circular_ids else 'no'}" + (f" ({', '.join(sorted(circular_ids))})" if circular_ids else ""),
         f"    Complement removal:      {'yes' if args.remove_complements else 'no'}",
         f"    Self-repeat masking:     {'yes (k={}, threshold={})'.format(args.repeat_k, args.repeat_threshold) if not args.skip_self_mask else 'no (skipped)'}",
         "",
@@ -2160,6 +2215,10 @@ Examples:
     ap.add_argument("--min-tm", type=float, default=0.0,
                     help="Minimum melting temperature filter (default: 0 = off). "
                          "Recommended: 50 for stringent filtering.")
+    ap.add_argument("--circular", action="store_true",
+                    help="Treat all input references as circular when tiling and validation.")
+    ap.add_argument("--circular-ids", default=None,
+                    help="Comma-delimited subset of reference IDs to treat as circular.")
 
     # Filtering
     ap.add_argument("--ambiguous-cutoff", type=int, default=10,

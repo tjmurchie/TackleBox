@@ -1,5 +1,12 @@
 # Changelog
 
+## FlyForge v1.2.0 / FlyForgeAudit v1.1.0
+- added actionable-flags vs informational-notes reporting in FlyForgeAudit terminal summaries and summary TSVs
+- printed recommendation text directly in the end-of-run FlyForgeAudit console summary
+- added FlyForge-style progress dashboards to FlyForgeAudit audit and augment modes
+- added optional circular-reference handling to FlyForge and FlyForgeAudit (`--circular`, `--circular-ids`) so wraparound bait design/analysis can cover linearized sequence ends
+- extended circular-reference BLAST validation subjects by `bait_length - 1` to support wraparound mapping during validation/audit
+
 ## v1.1.1 / FlyForgeAudit v1.0.1 - 2026-03-12
 
 ### Validation / audit math

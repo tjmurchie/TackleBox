@@ -48,7 +48,7 @@ from Bio.Seq import Seq
 
 import FlyForge as ff
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 
 # ============================================================================
@@ -84,7 +84,45 @@ class PreparedTargets:
     processed_seqs: Dict[str, str]
     masked_seqs: Dict[str, str]
     fasta_path: str
+    blast_fasta_path: str
+    circular_ids: set
     modified_bases: Dict[str, int]
+
+
+def summarize_recommendations(recommendations: pd.DataFrame) -> Tuple[int, int]:
+    if recommendations is None or recommendations.empty:
+        return 0, 0
+    severities = recommendations.get("severity", pd.Series(dtype=str)).astype(str).str.lower()
+    informational = int((severities == "info").sum())
+    actionable = int(len(recommendations) - informational)
+    return actionable, informational
+
+
+def format_recommendation_lines(recommendations: pd.DataFrame) -> List[str]:
+    if recommendations is None or recommendations.empty:
+        return ["    - No recommendations generated."]
+    lines = []
+    for row in recommendations.itertuples(index=False):
+        sev = str(getattr(row, "severity", "info")).upper()
+        category = getattr(row, "category", "note")
+        target = getattr(row, "target", "panel")
+        rec = getattr(row, "recommendation", "")
+        evidence = getattr(row, "evidence", "")
+        lines.append(f"    - [{sev}] {category} | {target}: {rec}")
+        if evidence:
+            lines.append(f"      Evidence: {evidence}")
+    return lines
+
+
+def build_extended_target_fasta(raw_seqs: Dict[str, str], bait_length: int, circular_ids: set, output_path: str) -> str:
+    records = []
+    extension = max(0, bait_length - 1)
+    for ref_id, seq in raw_seqs.items():
+        if ref_id in circular_ids and extension > 0 and len(seq) > 0:
+            seq = seq + seq[:extension]
+        records.append((ref_id, seq))
+    ff.write_fasta(output_path, records)
+    return output_path
 
 
 def ensure_in_path(programs: Iterable[str]) -> None:
@@ -162,6 +200,8 @@ def prepare_targets(
     skip_self_mask: bool,
     repeat_k: int,
     repeat_threshold: int,
+    circular_all: bool,
+    circular_ids_arg: Optional[str],
     log_fn,
 ) -> PreparedTargets:
     raw_seqs = read_fasta_paths(input_paths)
@@ -191,14 +231,19 @@ def prepare_targets(
     masked = processed if skip_self_mask else ff.self_repeat_softmask(
         processed, k=repeat_k, threshold=repeat_threshold
     )
+    circular_ids = set(masked.keys()) if circular_all else ff.parse_circular_id_set(circular_ids_arg, list(masked.keys()))
     masked_fasta = os.path.join(output_dir, f"{prefix}_analysis_targets.fna")
     ff.write_fasta(masked_fasta, list(masked.items()))
+    blast_fasta = os.path.join(output_dir, f"{prefix}_analysis_targets_for_blast.fna")
+    build_extended_target_fasta(masked, bait_length, circular_ids, blast_fasta)
 
     return PreparedTargets(
         raw_seqs=raw_seqs,
         processed_seqs=processed,
         masked_seqs=masked,
         fasta_path=masked_fasta,
+        blast_fasta_path=blast_fasta,
+        circular_ids=circular_ids,
         modified_bases=modified_bases,
     )
 
@@ -215,6 +260,8 @@ def analyze_probe_panel(
     prefix: str,
     probe_length: int,
     log_fn,
+    circular_ids: Optional[set] = None,
+    target_lengths_override: Optional[Dict[str, int]] = None,
     write_outputs: bool = True,
     write_plots: bool = True,
 ) -> AnalysisResult:
@@ -247,13 +294,15 @@ def analyze_probe_panel(
     target_records = list(SeqIO.parse(target_fasta, "fasta"))
     probe_records = list(SeqIO.parse(probe_fasta, "fasta"))
     target_ids = [record.id for record in target_records]
-    target_lengths = {record.id: len(record.seq) for record in target_records}
+    target_lengths = dict(target_lengths_override or {record.id: len(record.seq) for record in target_records})
+    circular_ids = set(circular_ids or set())
     trusted_meta = ff.infer_trusted_probe_metadata(probe_records, target_lengths)
 
     for record in target_records:
-        coverage_dict[record.id] = np.zeros(len(record.seq), dtype=float)
-        gc_dict[record.id] = SeqUtils.gc_fraction(record.seq)
-        target_seq_dict[record.id] = str(record.seq)
+        orig_len = int(target_lengths.get(record.id, len(record.seq)))
+        coverage_dict[record.id] = np.zeros(orig_len, dtype=float)
+        gc_dict[record.id] = SeqUtils.gc_fraction(str(record.seq)[:orig_len])
+        target_seq_dict[record.id] = str(record.seq)[:orig_len]
         target_count_dict[record.id] = 0
 
     identity_cutoff = int(probe_length * 0.625)
@@ -303,16 +352,21 @@ def analyze_probe_panel(
                     assigned_target = str(primary["target"])
                     match_array = ff.hsp_to_match_array(primary["hsp"])
                     target_len = coverage_dict[assigned_target].size
-                    pad_left = int(primary["subject_start"]) - 1
-                    pad_right = target_len - (pad_left + match_array.size)
-                    if pad_right >= 0:
-                        padded = np.pad(
-                            match_array,
-                            (pad_left, pad_right),
-                            mode="constant",
-                            constant_values=(0, 0),
-                        )
-                        coverage_dict[assigned_target] += padded
+                    if assigned_target in circular_ids:
+                        start1 = int(primary["subject_start"])
+                        end1 = start1 + int(match_array.size) - 1
+                        ff.apply_interval_coverage(coverage_dict[assigned_target], start1, end1)
+                    else:
+                        pad_left = int(primary["subject_start"]) - 1
+                        pad_right = target_len - (pad_left + match_array.size)
+                        if pad_right >= 0:
+                            padded = np.pad(
+                                match_array,
+                                (pad_left, pad_right),
+                                mode="constant",
+                                constant_values=(0, 0),
+                            )
+                            coverage_dict[assigned_target] += padded
 
             if assigned_target is not None:
                 pair = (assigned_target, probe)
@@ -629,6 +683,7 @@ def write_summary(
     recommendations: pd.DataFrame,
     extra_lines: Optional[List[str]] = None,
 ) -> None:
+    actionable_flags, informational_notes = summarize_recommendations(recommendations)
     with open(output_path, "w") as out:
         out.write(f"# TackleBox: FlyForgeAudit v{__version__}\n")
         out.write(f"# Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -643,17 +698,13 @@ def write_summary(
             f"mean_prop_covered\t{target_info['proportion_covered'].mean() if not target_info.empty else 0.0:.6f}\n"
             f"mean_depth\t{target_info['mean_depth'].mean() if not target_info.empty else 0.0:.6f}\n"
             f"n_recommendations\t{len(recommendations)}\n"
+            f"actionable_flags\t{actionable_flags}\n"
+            f"informational_notes\t{informational_notes}\n"
         )
         if extra_lines:
             out.write("# ===== Extra =====\n")
             for line in extra_lines:
                 out.write(line + "\n")
-
-
-# ============================================================================
-# Candidate generation for augment mode
-# ============================================================================
-
 
 def greedy_cover_candidates(
     ref_id: str,
@@ -912,12 +963,24 @@ def run_audit(args) -> None:
     log, log_handle = log_factory(log_path)
     t_start = time.time()
 
+    steps = ["preprocessing"]
+    if args.remove_complements:
+        steps.append("complement_removal")
+    if not args.skip_self_mask:
+        steps.append("self_masking")
+    steps.append("validation")
+    if args.avoid_db:
+        steps.append("specificity_filter")
+    steps.append("write_output")
+    progress = ff.ProgressTracker(steps, log, t_start)
+
     log(f"TackleBox: FlyForgeAudit v{__version__} — audit mode")
     bait_objs = read_baits_as_objects(args.baits)
     bait_length = infer_bait_length_from_panel(bait_objs)
     panel_fasta = os.path.join(args.output_dir, f"{args.prefix}_final_baits.fa")
     write_baits_fasta(panel_fasta, bait_objs)
 
+    progress.start_step("preprocessing")
     targets = prepare_targets(
         args.reference,
         output_dir=args.output_dir,
@@ -927,19 +990,31 @@ def run_audit(args) -> None:
         skip_self_mask=args.skip_self_mask,
         repeat_k=args.repeat_k,
         repeat_threshold=args.repeat_threshold,
+        circular_all=args.circular,
+        circular_ids_arg=args.circular_ids,
         log_fn=log,
     )
+    if args.remove_complements:
+        progress.status["complement_removal"] = "done"
+    if not args.skip_self_mask:
+        progress.status["self_masking"] = "done"
+    circular_detail = f"; circular: {', '.join(sorted(targets.circular_ids))}" if targets.circular_ids else ""
+    progress.finish_step("preprocessing", details=f"{len(targets.masked_seqs)} targets prepared{circular_detail}")
 
+    progress.start_step("validation")
     result = analyze_probe_panel(
         probe_fasta=panel_fasta,
-        target_fasta=targets.fasta_path,
+        target_fasta=targets.blast_fasta_path,
         output_dir=args.output_dir,
         prefix=args.prefix,
         probe_length=bait_length,
         log_fn=log,
+        circular_ids=targets.circular_ids,
+        target_lengths_override={k: len(v) for k, v in targets.masked_seqs.items()},
         write_outputs=True,
         write_plots=True,
     )
+    progress.finish_step("validation", details="Panel analysis and plotting complete")
 
     per_ref_path = os.path.join(args.output_dir, f"{args.prefix}_per_ref_stats.tsv")
     write_per_ref_stats(
@@ -952,6 +1027,7 @@ def run_audit(args) -> None:
 
     avoid_hits = None
     if args.avoid_db:
+        progress.start_step("specificity_filter")
         avoid_path = os.path.join(args.output_dir, f"{args.prefix}_avoid_hits.tsv")
         avoid_hits = blast_against_avoid_db(
             panel_fasta,
@@ -961,7 +1037,9 @@ def run_audit(args) -> None:
             args.avoid_max_hits,
             args.threads,
         )
-        log(f"Avoid-database screen complete: {avoid_hits['qseqid'].nunique() if not avoid_hits.empty else 0} probes flagged")
+        flagged = avoid_hits["qseqid"].nunique() if not avoid_hits.empty else 0
+        log(f"Avoid-database screen complete: {flagged} probes flagged")
+        progress.finish_step("specificity_filter", details=f"{flagged} probes flagged")
 
     rec_tsv = os.path.join(args.output_dir, f"{args.prefix}_recommendations.tsv")
     rec_txt = os.path.join(args.output_dir, f"{args.prefix}_recommendations.txt")
@@ -976,6 +1054,7 @@ def run_audit(args) -> None:
         avoid_hits=avoid_hits,
     )
 
+    progress.start_step("write_output")
     summary_path = os.path.join(args.output_dir, f"{args.prefix}_summary.tsv")
     params = {
         "mode": "audit",
@@ -989,8 +1068,14 @@ def run_audit(args) -> None:
         "avoid_max_hits": args.avoid_max_hits,
         "remove_complements": args.remove_complements,
         "skip_self_mask": args.skip_self_mask,
+        "circular": args.circular,
+        "circular_ids": ",".join(sorted(targets.circular_ids)) if targets.circular_ids else "N/A",
     }
     write_summary(summary_path, "audit", params, result.target_info, result.probe_info, recommendations)
+
+    actionable_flags, informational_notes = summarize_recommendations(recommendations)
+    rec_lines = format_recommendation_lines(recommendations)
+    progress.finish_step("write_output", details="Reports written")
 
     elapsed = ff.format_duration(time.time() - t_start)
     mean_prop = result.target_info["proportion_covered"].mean() if not result.target_info.empty else 0.0
@@ -1003,20 +1088,38 @@ def run_audit(args) -> None:
         f"  Targets audited:         {len(result.target_info):,d}\n"
         f"  Mean coverage fraction:  {mean_prop:.1%}\n"
         f"  Mean coverage depth:     {mean_depth:.2f}x\n"
-        f"  Recommendations:         {len(recommendations):,d}\n"
-        f"  Output directory:        {args.output_dir}\n"
-        f"  Runtime:                 {elapsed}\n"
+        f"  Actionable flags:        {actionable_flags:,d}\n"
+        f"  Informational notes:     {informational_notes:,d}\n"
+        + "-" * 72 + "\n"
+        + "  Recommendations\n"
+        + "\n".join(rec_lines) + "\n"
+        + "-" * 72 + "\n"
+        + f"  Output directory:        {args.output_dir}\n"
+        + f"  Runtime:                 {elapsed}\n"
         + "=" * 72,
         file=sys.stderr,
     )
     log_handle.close()
-
 
 def run_augment(args) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     log_path = os.path.join(args.output_dir, f"{args.prefix}_progress.log")
     log, log_handle = log_factory(log_path)
     t_start = time.time()
+
+    steps = ["preprocessing"]
+    if args.remove_complements:
+        steps.append("complement_removal")
+    if not args.skip_self_mask:
+        steps.append("self_masking")
+    steps.append("tiling")
+    if not args.no_opool:
+        steps.append("opool_design")
+    steps.append("validation")
+    if args.avoid_db:
+        steps.append("specificity_filter")
+    steps.append("write_output")
+    progress = ff.ProgressTracker(steps, log, t_start)
 
     log(f"TackleBox: FlyForgeAudit v{__version__} — augment mode")
     existing_baits = read_baits_as_objects(args.existing_baits)
@@ -1030,6 +1133,7 @@ def run_augment(args) -> None:
     existing_panel_fa = os.path.join(args.output_dir, f"{args.prefix}_existing_final_baits.fa")
     write_baits_fasta(existing_panel_fa, existing_baits)
 
+    progress.start_step("preprocessing")
     targets = prepare_targets(
         args.new_targets,
         output_dir=args.output_dir,
@@ -1039,13 +1143,22 @@ def run_augment(args) -> None:
         skip_self_mask=args.skip_self_mask,
         repeat_k=args.repeat_k,
         repeat_threshold=args.repeat_threshold,
+        circular_all=args.circular,
+        circular_ids_arg=args.circular_ids,
         log_fn=log,
     )
+    if args.remove_complements:
+        progress.status["complement_removal"] = "done"
+    if not args.skip_self_mask:
+        progress.status["self_masking"] = "done"
+    circular_detail = f"; circular: {', '.join(sorted(targets.circular_ids))}" if targets.circular_ids else ""
+    progress.finish_step("preprocessing", details=f"{len(targets.masked_seqs)} targets prepared{circular_detail}")
 
     counter = defaultdict(int)
     new_baits: List[ff.Bait] = []
     deficit_snapshots: List[str] = []
 
+    progress.start_step("tiling")
     for iteration in range(1, args.max_augment_iterations + 1):
         combined = existing_baits + new_baits
         combined_tmp = os.path.join(args.output_dir, f"{args.prefix}_iter{iteration}_combined_tmp.fna")
@@ -1053,11 +1166,13 @@ def run_augment(args) -> None:
 
         iter_result = analyze_probe_panel(
             probe_fasta=combined_tmp,
-            target_fasta=targets.fasta_path,
+            target_fasta=targets.blast_fasta_path,
             output_dir=args.output_dir,
             prefix=f"{args.prefix}_iter{iteration}",
             probe_length=bait_length,
             log_fn=log,
+            circular_ids=targets.circular_ids,
+            target_lengths_override={k: len(v) for k, v in targets.masked_seqs.items()},
             write_outputs=False,
             write_plots=False,
         )
@@ -1114,6 +1229,7 @@ def run_augment(args) -> None:
         if len(new_baits) == prior_n:
             log("No net new baits were added after deduplication; stopping augmentation.")
             break
+    progress.finish_step("tiling", details=f"{len(new_baits)} extra baits proposed")
 
     extra_fasta = os.path.join(args.output_dir, f"{args.prefix}_extra_final_baits.fa")
     write_baits_fasta(extra_fasta, new_baits)
@@ -1121,27 +1237,33 @@ def run_augment(args) -> None:
     extra_oligo_path = None
     extra_primer_path = None
     if not args.no_opool and new_baits:
+        progress.start_step("opool_design")
         extra_oligo_path, _, extra_primer_path, _ = ff.design_opool(
             new_baits,
             args.output_dir,
             f"{args.prefix}_extra",
             log,
         )
+        progress.finish_step("opool_design", details=f"Extra oligo pool: {os.path.basename(extra_oligo_path)}")
 
     merged_baits = existing_baits + new_baits
     merged_fasta = os.path.join(args.output_dir, f"{args.prefix}_final_baits.fa")
     write_baits_fasta(merged_fasta, merged_baits)
 
+    progress.start_step("validation")
     final_result = analyze_probe_panel(
         probe_fasta=merged_fasta,
-        target_fasta=targets.fasta_path,
+        target_fasta=targets.blast_fasta_path,
         output_dir=args.output_dir,
         prefix=args.prefix,
         probe_length=bait_length,
         log_fn=log,
+        circular_ids=targets.circular_ids,
+        target_lengths_override={k: len(v) for k, v in targets.masked_seqs.items()},
         write_outputs=True,
         write_plots=True,
     )
+    progress.finish_step("validation", details="Merged panel analysis complete")
 
     per_ref_path = os.path.join(args.output_dir, f"{args.prefix}_per_ref_stats.tsv")
     write_per_ref_stats(
@@ -1154,6 +1276,7 @@ def run_augment(args) -> None:
 
     avoid_hits = None
     if args.avoid_db:
+        progress.start_step("specificity_filter")
         avoid_path = os.path.join(args.output_dir, f"{args.prefix}_avoid_hits.tsv")
         avoid_hits = blast_against_avoid_db(
             merged_fasta,
@@ -1172,6 +1295,8 @@ def run_augment(args) -> None:
                 args.avoid_max_hits,
                 args.threads,
             )
+        flagged = avoid_hits["qseqid"].nunique() if not avoid_hits.empty else 0
+        progress.finish_step("specificity_filter", details=f"{flagged} merged-panel probes flagged")
 
     rec_tsv = os.path.join(args.output_dir, f"{args.prefix}_recommendations.tsv")
     rec_txt = os.path.join(args.output_dir, f"{args.prefix}_recommendations.txt")
@@ -1186,6 +1311,7 @@ def run_augment(args) -> None:
         avoid_hits=avoid_hits,
     )
 
+    progress.start_step("write_output")
     summary_path = os.path.join(args.output_dir, f"{args.prefix}_summary.tsv")
     params = {
         "mode": "augment",
@@ -1201,6 +1327,8 @@ def run_augment(args) -> None:
         "no_opool": args.no_opool,
         "remove_complements": args.remove_complements,
         "skip_self_mask": args.skip_self_mask,
+        "circular": args.circular,
+        "circular_ids": ",".join(sorted(targets.circular_ids)) if targets.circular_ids else "N/A",
         "extra_baits": len(new_baits),
         "merged_panel_baits": len(merged_baits),
     }
@@ -1209,6 +1337,10 @@ def run_augment(args) -> None:
         f"extra_amplification_primers\t{extra_primer_path or 'N/A'}",
     ]
     write_summary(summary_path, "augment", params, final_result.target_info, final_result.probe_info, recommendations, extra_lines=extra_lines)
+
+    actionable_flags, informational_notes = summarize_recommendations(recommendations)
+    rec_lines = format_recommendation_lines(recommendations)
+    progress.finish_step("write_output", details="Augment reports written")
 
     elapsed = ff.format_duration(time.time() - t_start)
     mean_prop = final_result.target_info["proportion_covered"].mean() if not final_result.target_info.empty else 0.0
@@ -1223,18 +1355,18 @@ def run_augment(args) -> None:
         f"  Targets audited:         {len(final_result.target_info):,d}\n"
         f"  Mean coverage fraction:  {mean_prop:.1%}\n"
         f"  Mean coverage depth:     {mean_depth:.2f}x\n"
-        f"  Output directory:        {args.output_dir}\n"
-        f"  Runtime:                 {elapsed}\n"
+        f"  Actionable flags:        {actionable_flags:,d}\n"
+        f"  Informational notes:     {informational_notes:,d}\n"
+        + "-" * 72 + "\n"
+        + "  Recommendations\n"
+        + "\n".join(rec_lines) + "\n"
+        + "-" * 72 + "\n"
+        + f"  Output directory:        {args.output_dir}\n"
+        + f"  Runtime:                 {elapsed}\n"
         + "=" * 72,
         file=sys.stderr,
     )
     log_handle.close()
-
-
-# ============================================================================
-# CLI
-# ============================================================================
-
 
 def add_shared_filtering_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bait-length", type=int, default=None,
@@ -1285,6 +1417,10 @@ def add_shared_filtering_args(parser: argparse.ArgumentParser) -> None:
                         help="Maximum BLAST hits per bait reported for avoid-database screening (default: 10).")
     parser.add_argument("--coverage-fraction-goal", type=float, default=0.95,
                         help="Coverage-fraction goal used in recommendations (default: 0.95).")
+    parser.add_argument("--circular", action="store_true",
+                        help="Treat all reference targets as circular for analysis/augmentation.")
+    parser.add_argument("--circular-ids", default=None,
+                        help="Comma-delimited subset of reference IDs to treat as circular.")
     parser.add_argument("--threads", type=int, default=1,
                         help="Threads for BLAST/cd-hit-est (default: 1).")
 
