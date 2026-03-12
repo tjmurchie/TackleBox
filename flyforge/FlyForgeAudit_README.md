@@ -29,6 +29,8 @@ Use:
 
 Do **not** give it an oligo-pool FASTA that already includes the T7 and amplification-primer tails.
 
+Coverage note: FlyForgeAudit now assigns each bait **one primary on-target placement**. If bait IDs encode trusted design coordinates, it uses those positions directly for coverage accounting so repetitive regions do not create false stacked-depth spikes. When coordinate metadata is absent, it falls back to the best-supported primary BLAST placement.
+
 ---
 
 ## Installation

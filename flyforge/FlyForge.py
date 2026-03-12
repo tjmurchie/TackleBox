@@ -64,7 +64,7 @@ from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 from tqdm import tqdm
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -1117,13 +1117,190 @@ def design_opool(baits: List[Bait], output_dir: str, prefix: str,
 
 
 # ============================================================================
+# Validation metadata helpers
+# ============================================================================
+
+def parse_probe_header_metadata(probe_id: str, seqlen: int) -> Dict[str, object]:
+    """Extract positional metadata from probe identifiers when present."""
+    m = re.match(r"^(?P<ref>.+)\|[^|]+\|pos(?P<start>\d+)-(?P<end>\d+)$", probe_id)
+    if m:
+        return {
+            "probe_id": probe_id,
+            "ref_hint": m.group("ref"),
+            "start": int(m.group("start")),
+            "end": int(m.group("end")),
+            "scheme": "explicit_pos",
+            "trusted": True,
+        }
+
+    m = re.match(r"^(?P<ref>.+)_pos(?P<start>\d+)-(?P<end>\d+)$", probe_id)
+    if m:
+        return {
+            "probe_id": probe_id,
+            "ref_hint": m.group("ref"),
+            "start": int(m.group("start")),
+            "end": int(m.group("end")),
+            "scheme": "suffix_pos",
+            "trusted": True,
+        }
+
+    m = re.match(r"^(?P<ref>.+)_(?P<start0>\d+)$", probe_id)
+    if m:
+        start0 = int(m.group("start0"))
+        return {
+            "probe_id": probe_id,
+            "ref_hint": m.group("ref"),
+            "start": start0 + 1,
+            "end": start0 + seqlen,
+            "scheme": "suffix_start0",
+            "trusted": False,
+            "suffix_start0": start0,
+        }
+
+    return {
+        "probe_id": probe_id,
+        "ref_hint": None,
+        "start": None,
+        "end": None,
+        "scheme": "none",
+        "trusted": False,
+    }
+
+
+def _normalize_ref_token(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", str(name)).lower()
+
+
+def resolve_ref_hint_to_target(ref_hint: Optional[str], target_ids: List[str]) -> Optional[str]:
+    if not ref_hint:
+        return target_ids[0] if len(target_ids) == 1 else None
+    if ref_hint in target_ids:
+        return ref_hint
+
+    norm_hint = _normalize_ref_token(ref_hint)
+    norm_targets = {tid: _normalize_ref_token(tid) for tid in target_ids}
+    exact = [tid for tid, norm in norm_targets.items() if norm == norm_hint]
+    if len(exact) == 1:
+        return exact[0]
+
+    contains = [
+        tid for tid, norm in norm_targets.items()
+        if norm_hint and (norm_hint in norm or norm in norm_hint)
+    ]
+    if len(contains) == 1:
+        return contains[0]
+
+    acc_tokens = re.findall(r"[A-Z]{1,4}[_-]?\d+(?:\.\d+)?", str(ref_hint))
+    for token in acc_tokens:
+        token_norm = _normalize_ref_token(token)
+        matched = [tid for tid, norm in norm_targets.items() if token_norm and token_norm in norm]
+        if len(matched) == 1:
+            return matched[0]
+
+    return target_ids[0] if len(target_ids) == 1 else None
+
+
+def infer_trusted_probe_metadata(
+    probe_records: List[SeqRecord],
+    target_lengths: Dict[str, int],
+) -> Dict[str, Dict[str, object]]:
+    trusted: Dict[str, Dict[str, object]] = {}
+    suffix_candidates: Dict[str, Dict[str, object]] = {}
+
+    for rec in probe_records:
+        meta = parse_probe_header_metadata(rec.id, len(rec.seq))
+        if meta["scheme"] in {"explicit_pos", "suffix_pos"}:
+            trusted[rec.id] = meta
+        elif meta["scheme"] == "suffix_start0":
+            suffix_candidates[rec.id] = meta
+
+    if suffix_candidates and len(target_lengths) == 1:
+        target_len = next(iter(target_lengths.values()))
+        vals = sorted(int(meta["start"]) for meta in suffix_candidates.values() if meta["start"] is not None)
+        if vals:
+            span = vals[-1] - vals[0]
+            if span >= max(50, int(0.5 * target_len)) and span <= int(2.0 * target_len):
+                for probe_id, meta in suffix_candidates.items():
+                    promoted = dict(meta)
+                    promoted["trusted"] = True
+                    trusted[probe_id] = promoted
+
+    return trusted
+
+
+def apply_interval_coverage(cov_array: np.ndarray, start_1based: int, end_1based: int) -> None:
+    if cov_array.size == 0 or start_1based is None or end_1based is None:
+        return
+    span = max(0, int(end_1based) - int(start_1based) + 1)
+    if span <= 0:
+        return
+    L = cov_array.size
+    start0 = (int(start_1based) - 1) % L
+    if start0 + span <= L:
+        cov_array[start0:start0 + span] += 1
+    else:
+        first = L - start0
+        cov_array[start0:] += 1
+        cov_array[:span - first] += 1
+
+
+def hsp_to_match_array(hsp) -> np.ndarray:
+    matches = ' '.join(hsp.match.replace('|', '1').replace(' ', '0'))
+    match_array = np.fromstring(matches, dtype=int, sep=' ')
+    if '-' in hsp.sbjct:
+        sbjct_gaps = ' '.join(re.sub(r'[ATGC]', '0', hsp.sbjct.replace('-', '1')))
+        gap_arr = np.fromstring(sbjct_gaps, dtype=int, sep=' ')
+        gap_pos = np.where(gap_arr == 1)
+        match_array = np.delete(match_array, gap_pos)
+    return match_array
+
+
+def hsp_subject_start(hsp) -> int:
+    return hsp.sbjct_start if hsp.strand[0] == hsp.strand[1] else hsp.sbjct_end
+
+
+def pick_primary_hit(valid_hits: List[Dict[str, object]], probe_meta: Optional[Dict[str, object]] = None) -> Optional[Dict[str, object]]:
+    if not valid_hits:
+        return None
+
+    probe_meta = probe_meta or {}
+    expected_target = probe_meta.get('target_id')
+    expected_start = probe_meta.get('start')
+
+    def key(hit: Dict[str, object]):
+        target_penalty = 0
+        if expected_target is not None:
+            target_penalty = 0 if hit['target'] == expected_target else 1
+        start_penalty = 0
+        if expected_start is not None:
+            start_penalty = abs(int(hit['subject_start']) - int(expected_start))
+        return (
+            target_penalty,
+            start_penalty,
+            -int(hit['identities']),
+            -int(hit['align_length']),
+            -float(hit['bits']),
+            int(hit['subject_start']),
+        )
+
+    return min(valid_hits, key=key)
+
+
+# ============================================================================
 # BLAST validation and analysis (adapted from CARPDM)
 # ============================================================================
 
 def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
                      prefix: str, probe_length: int,
                      log_fn) -> Dict[str, np.ndarray]:
-    """BLAST probes against design targets and write analysis tables/plots."""
+    """BLAST probes against design targets and write analysis tables/plots.
+
+    Coverage assignment is conservative: each probe contributes at most one
+    primary on-target placement. When probe identifiers encode positional
+    provenance (the standard FlyForge ``|posstart-end`` format), that metadata
+    is trusted for coverage placement so repetitive regions do not inflate
+    depth by counting every valid BLAST HSP.
+    """
     if shutil.which('blastn') is None:
         raise RuntimeError(
             'blastn was not found in PATH. BLAST+ is required for validation and '
@@ -1145,26 +1322,35 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
     coverage_dict: Dict[str, np.ndarray] = {}
     gc_dict: Dict[str, float] = {}
     target_seq_dict: Dict[str, str] = {}
-    probe_count_dict: Dict[str, int] = {}
+    probe_target_sets: Dict[str, Set[str]] = defaultdict(set)
     target_count_dict: Dict[str, int] = {}
 
-    for record in SeqIO.parse(design_fasta, 'fasta'):
-        name = record.id
-        target_gc = SeqUtils.gc_fraction(record.seq)
-        target_length = len(record.seq)
-        coverage_dict[name] = np.zeros(target_length)
-        gc_dict[name] = target_gc
-        target_count_dict[name] = 0
-        target_seq_dict[name] = str(record.seq)
+    design_records = list(SeqIO.parse(design_fasta, 'fasta'))
+    probe_records = list(SeqIO.parse(probe_fasta, 'fasta'))
+    target_ids = [record.id for record in design_records]
+    target_lengths = {record.id: len(record.seq) for record in design_records}
+    trusted_meta = infer_trusted_probe_metadata(probe_records, target_lengths)
 
-    for record in SeqIO.parse(probe_fasta, 'fasta'):
-        probe_count_dict[record.id] = 0
+    for record in design_records:
+        name = record.id
+        coverage_dict[name] = np.zeros(len(record.seq), dtype=float)
+        gc_dict[name] = SeqUtils.gc_fraction(record.seq)
+        target_seq_dict[name] = str(record.seq)
+        target_count_dict[name] = 0
 
     identity_cutoff = int(probe_length * 0.625)
     pair_list = []
+    seen_pairs: Set[Tuple[str, str]] = set()
+
     with open(blast_xml) as infile:
         for record in NCBIXML.parse(infile):
             probe = record.query.split()[0]
+            meta = trusted_meta.get(probe)
+            if meta is not None:
+                meta = dict(meta)
+                meta['target_id'] = resolve_ref_hint_to_target(meta.get('ref_hint'), target_ids)
+
+            valid_hits: List[Dict[str, object]] = []
             for alignment in record.alignments:
                 target = getattr(alignment, 'hit_id', None)
                 if not target:
@@ -1179,31 +1365,27 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
                         continue
                     if re.search(r'--+', hsp.query) is not None:
                         continue
+                    valid_hits.append({
+                        'target': target,
+                        'hsp': hsp,
+                        'identities': int(hsp.identities),
+                        'align_length': int(hsp.align_length),
+                        'bits': float(hsp.bits),
+                        'subject_start': int(hsp_subject_start(hsp)),
+                    })
 
-                    target_count_dict[target] += 1
-                    if probe in probe_count_dict:
-                        probe_count_dict[probe] += 1
-                    pair_list.append((target, probe))
-
-                    target_len = coverage_dict[target].size
-                    matches = ' '.join(
-                        hsp.match.replace('|', '1').replace(' ', '0'))
-                    match_array = np.fromstring(matches, dtype=int, sep=' ')
-
-                    if '-' in hsp.sbjct:
-                        sbjct_gaps = ' '.join(
-                            re.sub(r'[ATGC]', '0', hsp.sbjct.replace('-', '1')))
-                        gap_arr = np.fromstring(sbjct_gaps, dtype=int, sep=' ')
-                        gap_pos = np.where(gap_arr == 1)
-                        match_array = np.delete(match_array, gap_pos)
-
-                    hsp_length = match_array.size
-                    if hsp.strand[0] == hsp.strand[1]:
-                        start = hsp.sbjct_start
-                    else:
-                        start = hsp.sbjct_end
-                    pad_left = start - 1
-                    pad_right = target_len - (pad_left + hsp_length)
+            assigned_target = None
+            if meta is not None and meta.get('target_id') in coverage_dict and meta.get('start') is not None and meta.get('end') is not None:
+                assigned_target = str(meta['target_id'])
+                apply_interval_coverage(coverage_dict[assigned_target], int(meta['start']), int(meta['end']))
+            else:
+                primary = pick_primary_hit(valid_hits, meta)
+                if primary is not None:
+                    assigned_target = str(primary['target'])
+                    match_array = hsp_to_match_array(primary['hsp'])
+                    target_len = coverage_dict[assigned_target].size
+                    pad_left = int(primary['subject_start']) - 1
+                    pad_right = target_len - (pad_left + match_array.size)
                     if pad_right >= 0:
                         padded = np.pad(
                             match_array,
@@ -1211,7 +1393,15 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
                             mode='constant',
                             constant_values=(0, 0),
                         )
-                        coverage_dict[target] += padded
+                        coverage_dict[assigned_target] += padded
+
+            if assigned_target is not None:
+                pair = (assigned_target, probe)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    pair_list.append(pair)
+                    target_count_dict[assigned_target] += 1
+                probe_target_sets[probe].add(assigned_target)
 
     pair_df = pd.DataFrame(pair_list, columns=['target', 'probe'])
     pair_prefix = os.path.join(output_dir, prefix)
@@ -1236,14 +1426,15 @@ def blast_validation(probe_fasta: str, design_fasta: str, output_dir: str,
     target_info.to_csv(f'{pair_prefix}_target_info.csv', index=False)
 
     probe_rows = []
-    for record in SeqIO.parse(probe_fasta, 'fasta'):
+    for record in probe_records:
+        seq = str(record.seq)
         probe_rows.append({
             'probe_id': record.id,
-            'gc': SeqUtils.gc_fraction(record.seq),
-            'tm': mt.Tm_NN(record.seq, nn_table=mt.R_DNA_NN1),
-            'num_targets': probe_count_dict.get(record.id, 0),
-            'sequence': str(record.seq),
-            'contains_lgui_site': int(BSPQI_SITE_FWD in str(record.seq).upper() or BSPQI_SITE_REV in str(record.seq).upper()),
+            'gc': SeqUtils.gc_fraction(seq),
+            'tm': mt.Tm_NN(seq, nn_table=mt.R_DNA_NN1),
+            'num_targets': len(probe_target_sets.get(record.id, set())),
+            'sequence': seq,
+            'contains_lgui_site': int(BSPQI_SITE_FWD in seq.upper() or BSPQI_SITE_REV in seq.upper()),
         })
     probe_info = pd.DataFrame(probe_rows)
     probe_info.to_csv(f'{pair_prefix}_probe_info.csv', index=False)

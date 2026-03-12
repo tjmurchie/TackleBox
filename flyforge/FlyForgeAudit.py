@@ -48,7 +48,7 @@ from Bio.Seq import Seq
 
 import FlyForge as ff
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 # ============================================================================
@@ -108,10 +108,11 @@ def read_fasta_paths(paths: List[str]) -> Dict[str, str]:
 
 
 def parse_bait_id_metadata(bait_id: str, seqlen: int) -> Tuple[str, int, int]:
-    m = re.match(r"^(?P<ref>.+)\|[^|]+\|pos(?P<start>\d+)-(?P<end>\d+)$", bait_id)
-    if m:
-        return m.group("ref"), int(m.group("start")), int(m.group("end"))
-    return bait_id, 1, seqlen
+    meta = ff.parse_probe_header_metadata(bait_id, seqlen)
+    ref_hint = str(meta.get("ref_hint") or bait_id)
+    start = int(meta.get("start") or 1)
+    end = int(meta.get("end") or seqlen)
+    return ref_hint, start, end
 
 
 def read_baits_as_objects(fasta_path: str) -> List[ff.Bait]:
@@ -241,23 +242,33 @@ def analyze_probe_panel(
     gc_dict: Dict[str, float] = {}
     target_seq_dict: Dict[str, str] = {}
     target_count_dict: Dict[str, int] = {}
-    probe_count_dict: Dict[str, int] = {}
+    probe_target_sets: Dict[str, set] = defaultdict(set)
 
-    for record in SeqIO.parse(target_fasta, "fasta"):
+    target_records = list(SeqIO.parse(target_fasta, "fasta"))
+    probe_records = list(SeqIO.parse(probe_fasta, "fasta"))
+    target_ids = [record.id for record in target_records]
+    target_lengths = {record.id: len(record.seq) for record in target_records}
+    trusted_meta = ff.infer_trusted_probe_metadata(probe_records, target_lengths)
+
+    for record in target_records:
         coverage_dict[record.id] = np.zeros(len(record.seq), dtype=float)
         gc_dict[record.id] = SeqUtils.gc_fraction(record.seq)
         target_seq_dict[record.id] = str(record.seq)
         target_count_dict[record.id] = 0
 
-    for record in SeqIO.parse(probe_fasta, "fasta"):
-        probe_count_dict[record.id] = 0
-
     identity_cutoff = int(probe_length * 0.625)
     pair_list: List[Tuple[str, str]] = []
+    seen_pairs = set()
 
     with open(blast_xml) as infile:
         for record in NCBIXML.parse(infile):
             probe = record.query.split()[0]
+            meta = trusted_meta.get(probe)
+            if meta is not None:
+                meta = dict(meta)
+                meta["target_id"] = ff.resolve_ref_hint_to_target(meta.get("ref_hint"), target_ids)
+
+            valid_hits: List[Dict[str, object]] = []
             for alignment in record.alignments:
                 target = getattr(alignment, "hit_id", None)
                 if not target:
@@ -271,28 +282,29 @@ def analyze_probe_panel(
                         continue
                     if re.search(r"--+", hsp.query) is not None:
                         continue
+                    valid_hits.append(
+                        {
+                            "target": target,
+                            "hsp": hsp,
+                            "identities": int(hsp.identities),
+                            "align_length": int(hsp.align_length),
+                            "bits": float(hsp.bits),
+                            "subject_start": int(ff.hsp_subject_start(hsp)),
+                        }
+                    )
 
-                    target_count_dict[target] += 1
-                    if probe in probe_count_dict:
-                        probe_count_dict[probe] += 1
-                    pair_list.append((target, probe))
-
-                    target_len = coverage_dict[target].size
-                    matches = " ".join(hsp.match.replace("|", "1").replace(" ", "0"))
-                    match_array = np.fromstring(matches, dtype=int, sep=" ")
-
-                    if "-" in hsp.sbjct:
-                        sbjct_gaps = " ".join(
-                            re.sub(r"[ATGC]", "0", hsp.sbjct.replace("-", "1"))
-                        )
-                        gap_arr = np.fromstring(sbjct_gaps, dtype=int, sep=" ")
-                        gap_pos = np.where(gap_arr == 1)
-                        match_array = np.delete(match_array, gap_pos)
-
-                    hsp_length = match_array.size
-                    start = hsp.sbjct_start if hsp.strand[0] == hsp.strand[1] else hsp.sbjct_end
-                    pad_left = start - 1
-                    pad_right = target_len - (pad_left + hsp_length)
+            assigned_target = None
+            if meta is not None and meta.get("target_id") in coverage_dict and meta.get("start") is not None and meta.get("end") is not None:
+                assigned_target = str(meta["target_id"])
+                ff.apply_interval_coverage(coverage_dict[assigned_target], int(meta["start"]), int(meta["end"]))
+            else:
+                primary = ff.pick_primary_hit(valid_hits, meta)
+                if primary is not None:
+                    assigned_target = str(primary["target"])
+                    match_array = ff.hsp_to_match_array(primary["hsp"])
+                    target_len = coverage_dict[assigned_target].size
+                    pad_left = int(primary["subject_start"]) - 1
+                    pad_right = target_len - (pad_left + match_array.size)
                     if pad_right >= 0:
                         padded = np.pad(
                             match_array,
@@ -300,7 +312,15 @@ def analyze_probe_panel(
                             mode="constant",
                             constant_values=(0, 0),
                         )
-                        coverage_dict[target] += padded
+                        coverage_dict[assigned_target] += padded
+
+            if assigned_target is not None:
+                pair = (assigned_target, probe)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    pair_list.append(pair)
+                    target_count_dict[assigned_target] += 1
+                probe_target_sets[probe].add(assigned_target)
 
     pair_df = pd.DataFrame(pair_list, columns=["target", "probe"])
 
@@ -323,14 +343,14 @@ def analyze_probe_panel(
     target_info = pd.DataFrame(target_rows)
 
     probe_rows = []
-    for record in SeqIO.parse(probe_fasta, "fasta"):
+    for record in probe_records:
         seq = str(record.seq).upper()
         probe_rows.append(
             {
                 "probe_id": record.id,
                 "gc": SeqUtils.gc_fraction(seq),
                 "tm": ff.compute_tm(seq),
-                "num_targets": probe_count_dict.get(record.id, 0),
+                "num_targets": len(probe_target_sets.get(record.id, set())),
                 "sequence": seq,
                 "contains_lgui_site": int(ff.BSPQI_SITE_FWD in seq or ff.BSPQI_SITE_REV in seq),
             }
@@ -382,8 +402,6 @@ def analyze_probe_panel(
         violin(target_info, "proportion_covered", "Target Coverage Proportion Distribution", "target_coverage_prop")
         violin(target_info, "mean_depth", "Target Coverage Depth Distribution", "target_coverage_depth")
         violin(target_info, "std_dev", "Target Coverage Std Deviation Distribution", "target_coverage_stdev")
-
-        log_fn(f"Panel analysis complete. Plots written to {plot_dir}")
 
     return AnalysisResult(
         coverage_dict=coverage_dict,

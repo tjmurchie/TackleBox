@@ -17,6 +17,8 @@ FlyForge is part of the **TackleBox** suite.
 - constructs **order-ready oligo-pool sequences** for in-house synthesis
 - validates the final bare bait set back against the input references with per-target coverage plots and summary tables
 
+Validation note: final validation assigns each bait **one primary on-target placement**. For FlyForge-generated bait IDs that encode source coordinates, those coordinates are used to avoid artificial coverage inflation in repetitive regions (for example mitochondrial control-region repeats).
+
 ## Oligo-pool design model
 
 FlyForge follows the CARPDM oligo-pool strategy for in-house synthesis of RNA baits.

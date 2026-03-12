@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.1 / FlyForgeAudit v1.0.1 - 2026-03-12
+
+### Validation / audit math
+- fixed inflated coverage depth in repetitive regions by assigning **one primary on-target placement per bait** instead of summing every valid BLAST HSP
+- when bait identifiers encode positional provenance (for example `ref|b123|pos281-360` or trusted coordinate-style suffixes), validation now uses that metadata for coverage placement
+- restored expected circular-panel behavior for terminal wraparound baits during audit/validation coverage calculations
+- `target_probe_pairs.csv`, per-target probe counts, and `num_targets` are now based on unique primary assignments rather than raw HSP counts
+
+### Augment
+- corrected the coverage-deficit math used by `augment` so new-bait proposals are driven by primary panel coverage instead of repetitive-region HSP pileups
+
+### Notes
+- this specifically fixes the false 8x/175x-style inflation seen when auditing panels against low-complexity mitochondrial control regions
+
 ## v1.1.0 - 2026-03-11
 
 ### FlyForge
