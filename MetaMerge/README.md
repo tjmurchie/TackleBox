@@ -1,7 +1,5 @@
 # MetaMerge v1.0.0
 
-# MetaMerge
-
 **MetaMerge** is a command-line tool for ensemble ancient-DNA classification.
 It merges a conservative **BLASTn → MEGAN7** taxon count matrix with
 **Holi / metaDMG** damage assessments to assign DNA-evidence confidence
