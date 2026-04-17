@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metamerge"
+version = "1.0.0"
+description = "Ensemble aDNA classification by merging conservative MEGAN count matrices with Holi/metaDMG damage outputs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Tyler Murchie"},
+]
+keywords = [
+  "ancient DNA", "aDNA", "metagenomics", "MEGAN", "metaDMG", "Holi",
+  "paleogenomics", "environmental DNA", "taxonomy", "damage",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "pandas>=2.0",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+  "tqdm>=4.66",
+  "requests>=2.31",
+  "numpy>=1.24",
+]
+
+[project.urls]
+Repository = "https://github.com/tylerkmurchie/MetaMerge"
+Issues     = "https://github.com/tylerkmurchie/MetaMerge/issues"
+
+[project.scripts]
+metamerge = "metamerge.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

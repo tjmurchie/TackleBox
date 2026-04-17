@@ -1,0 +1,35 @@
+# Default configuration for aedna-merge.
+# Copy this file and edit thresholds or column aliases for your own project.
+
+io:
+  counts_sheet: null
+  metadata_sheet: null
+  output_prefix: aedna_merge
+
+thresholds:
+  damage_min: 0.01
+  significance_min: 2.0
+  high_confidence_n_reads_min: 100
+  strong_count_min_reads: 50
+  strong_count_min_libraries: 2
+  blank_absolute_min: 10
+  blank_relative_min: 0.10
+  qc_alignments_per_read_clean_max: 10.0
+  qc_alignments_per_read_caution_max: 20.0
+  qc_abs_rho_clean_max: 0.30
+  qc_abs_rho_caution_max: 0.50
+  lineage_max_steps: 2
+  lineage_max_rank_level: family
+  tentative_min_reads: 5
+  weak_support_min_reads: 1
+
+taxonomy:
+  online_common_names: false
+  common_name_language: eng
+
+report:
+  generate_heatmaps: false
+  top_n: 30
+  max_rank_for_reports: family
+  min_status_for_reports: Supported
+  include_negative_controls: true
