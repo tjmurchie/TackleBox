@@ -1,4 +1,4 @@
-# MetaMerge v1.0.0
+# MetaMerge v1.1.0
 
 **MetaMerge** is a command-line tool for ensemble ancient-DNA classification.
 It merges a conservative **BLASTn → MEGAN7** taxon count matrix with
@@ -124,15 +124,76 @@ Outputs:
 ### Step 3 — (Optional) Render heatmaps
 
 ```bash
-metamerge run ... --render-heatmaps
+metamerge run ... --render-graphs
 # or separately:
 metamerge report \
     --input-dir results/report_inputs \
     --outdir    results/reports
 ```
 
-Produces grouped heatmaps (animals, plants, fungi, microbes) using the
-bundled R script `r/metamerge_heatmap_report.R`.
+Produces grouped heatmaps, damage heatmaps, and stacked-bar plots (animals,
+plants, fungi, microbes) using the bundled R script
+`r/metamerge_heatmap_report.R`.
+
+After the run completes, a `sample_order.csv` file is written to
+`results/report_inputs/sample_order.csv`.  Edit this file and pass it to
+`metamerge report --sample-order` to customise the layout of every plot
+(see [Customising plot layout](#customising-plot-layout) below).
+
+### Step 4 — (Optional) Customise plot layout
+
+```bash
+# 1. Edit results/report_inputs/sample_order.csv in any spreadsheet tool
+# 2. Re-render with the edited file:
+metamerge report \
+    --input-dir results/report_inputs \
+    --outdir    results/reports_custom \
+    --sample-order results/report_inputs/sample_order.csv
+```
+
+---
+
+## Customising plot layout
+
+Every `metamerge run` writes a wide-format CSV to
+`<outdir>/report_inputs/sample_order.csv`.  Each **column** is a plot group
+(e.g. `A51_sediments`, `NHB_bones`, `negative_controls`) and each **row**
+within a column is a `plot_sample_id` in the order you want it to appear on
+the x-axis of every heatmap, damage heatmap, and stacked-bar plot.
+
+### What you can do by editing the file
+
+| Edit | Effect |
+|---|---|
+| Reorder rows within a column | Changes the left-to-right sample order within that plot group |
+| Move a sample ID to a different column | Re-assigns that sample to the new plot group |
+| Place the same sample ID in **multiple** columns | Sample appears in each of those group plots simultaneously |
+| Delete a row entirely | Excludes that sample from all plots |
+| Add a row | Adds a sample to a group (it will appear as an empty column if it has no detections) |
+
+> **Zero-detection samples** are always included in `sample_order.csv` and
+> will appear as empty columns on the plots — an absent signal is still
+> scientifically meaningful.
+
+### Replicate count labels
+
+When a biological sample is represented by more than one technical library
+(e.g. two sequencing chemistries), the x-axis label is automatically
+suffixed with `(x2)`, `(x3)`, etc.  The count reflects **all** technical
+libraries for that sample, not just those that had detections in a
+particular broad group.
+
+### Re-rendering after edits
+
+```bash
+metamerge report \
+    --input-dir <outdir>/report_inputs \
+    --outdir    <outdir>/reports_custom \
+    --sample-order <outdir>/report_inputs/sample_order.csv
+```
+
+The `--sample-order` flag is optional.  Without it, the default group
+assignments and alphabetical ordering from the original run are used.
 
 ---
 
@@ -354,9 +415,11 @@ All 14 tests should pass.
    project metadata.
 4. Manually correct any `REVIEW_NEEDED` or `UNKNOWN` rows in the linker.
 5. Run `metamerge check` to validate inputs.
-6. Run `metamerge run` to produce the merged workbook.
+6. Run `metamerge run --render-graphs` to produce the merged workbook and
+   initial heatmaps.
 7. Review the output, warnings, and blank-association flags.
-8. Optionally render grouped heatmaps.
+8. Edit `report_inputs/sample_order.csv` to customise sample ordering and
+   group assignments, then re-render with `metamerge report --sample-order`.
 9. Apply ecology/macrofossil interpretation as a separate scientific layer.
 
 ---

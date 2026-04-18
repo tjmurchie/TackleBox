@@ -283,9 +283,10 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
         long = long.merge(meta_for_merge, on="merged_library_name", how="left")
 
     long["count"] = pd.to_numeric(long["count"], errors="coerce").fillna(0)
-    long = long.loc[long["count"] > 0].copy()
-    if long.empty:
-        return long
+
+    # Compute total technical libraries per biological sample BEFORE the count>0
+    # filter, so that the (x2)/(x3) labels reflect all libraries for a sample
+    # regardless of whether they had any hits in this broad group.
     long["plot_sample_id"] = long.apply(
         lambda row: _normalize_plot_sample_id(
             row.get("sample_id"),
@@ -297,6 +298,15 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
         ),
         axis=1,
     )
+    n_tech_total: dict[str, int] = (
+        long.groupby("plot_sample_id")["merged_library_name"]
+        .nunique()
+        .to_dict()
+    )
+
+    long = long.loc[long["count"] > 0].copy()
+    if long.empty:
+        return long
     long["plot_group"] = long.apply(_derive_plot_group, axis=1)
 
     # collapse technical libraries / chemistries to plotting units
@@ -318,7 +328,7 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
             "plot_damage": float(dmg_vals.max()) if dmg_vals.notna().any() else float("nan"),
             "merged_library_name": plot_sample_id,
             "plot_library_label": _short_plot_label(plot_sample_id),
-            "n_technical_libraries": group["merged_library_name"].nunique(),
+            "n_technical_libraries": n_tech_total.get(plot_sample_id, 1),
             "technical_libraries": "; ".join(sorted(group["merged_library_name"].dropna().astype(str).unique().tolist())),
         }
         for col in fixed_cols:
@@ -370,7 +380,7 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
 
 
 def write_plot_inputs(merged: pd.DataFrame, metadata: pd.DataFrame, outdir: Path, config: dict) -> list[Path]:
-    """Write one long-format TSV per broad taxonomic group."""
+    """Write one long-format TSV per broad taxonomic group, plus sample_order.csv."""
     paths: list[Path] = []
     report_dir = outdir / "report_inputs"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -383,4 +393,127 @@ def write_plot_inputs(merged: pd.DataFrame, metadata: pd.DataFrame, outdir: Path
         table.to_csv(path, sep="	", index=False)
         paths.append(path)
 
+    # Pass metadata so zero-detection samples are included in the order file.
+    write_sample_order_table(paths, outdir, metadata=metadata)
     return paths
+
+
+def write_sample_order_table(
+    plot_input_paths: list[Path],
+    outdir: Path,
+    metadata: pd.DataFrame | None = None,
+) -> Path | None:
+    """Write a wide-format sample order CSV for user customisation.
+
+    Each column is a plot group (e.g. ``A51_sediments``, ``NHB_bones``).
+    Each row within a column is a ``plot_sample_id`` in the default display
+    order.  The user can:
+
+    * Reorder rows within a column to change the x-axis order on plots.
+    * Move a sample ID to a different column to reassign it to that group.
+    * Delete a row to exclude that sample from all plots.
+
+    Pass the edited file to ``metamerge report --sample-order <file>`` to
+    re-render plots respecting those changes.  Samples not listed in the file
+    are excluded from the output plots entirely.
+
+    Written to ``{outdir}/report_inputs/sample_order.csv``.
+
+    The complete sample list is derived from the *metadata* DataFrame so that
+    samples with zero MEGAN detections are always included (they show as empty
+    columns on the plots, which is important for showing negative results).
+    """
+    rows: list[dict] = []
+
+    # Primary source: metadata DataFrame — includes ALL libraries, even those
+    # with no MEGAN detections in any broad group.
+    if metadata is not None:
+        for _, mrow in metadata.iterrows():
+            psid = _normalize_plot_sample_id(
+                mrow.get("sample_id"),
+                mrow.get("biological_sample_id"),
+                mrow.get("holi_library_name"),
+                mrow.get("merged_library_name"),
+                mrow.get("sample_type"),
+                mrow.get("is_negative_control"),
+            )
+            # _derive_plot_group expects plot_sample_id in the row.
+            enriched = mrow.copy()
+            enriched["plot_sample_id"] = psid
+            pgrp = _derive_plot_group(enriched)
+            rows.append({
+                "plot_group":               pgrp,
+                "plot_sample_id":           psid,
+                "is_negative_control":      str(mrow.get("is_negative_control",      False)),
+                "is_environmental_control": str(mrow.get("is_environmental_control", False)),
+                "sample_type":              str(mrow.get("sample_type", "")),
+            })
+
+    # Fallback / supplement: read from plot input TSVs in case metadata was not
+    # supplied (e.g. called standalone) or contains unusual group derivations.
+    for path in plot_input_paths:
+        try:
+            df = pd.read_csv(path, sep="\t", dtype=str, usecols=[
+                "plot_group", "plot_sample_id",
+                "is_negative_control", "is_environmental_control", "sample_type",
+            ])
+            rows.extend(df.to_dict("records"))
+        except Exception:
+            continue
+
+    if not rows:
+        return None
+
+    combined = (
+        pd.DataFrame(rows)
+        .drop_duplicates(subset=["plot_group", "plot_sample_id"])
+        .copy()
+    )
+
+    def _is_true(col: pd.Series) -> pd.Series:
+        return col.fillna("").str.lower().isin({"true", "1", "yes"})
+
+    combined["_is_neg"] = _is_true(combined.get("is_negative_control",      pd.Series(dtype=str)))
+    combined["_is_env"] = _is_true(combined.get("is_environmental_control", pd.Series(dtype=str)))
+    combined["_is_pos"] = (
+        combined.get("sample_type", pd.Series(dtype=str))
+        .fillna("").str.lower().str.contains("positive", na=False)
+    )
+    # Non-controls first, then positives, then env controls, then neg controls;
+    # within each tier sort alphabetically by sample ID.
+    combined["_sort"] = (
+        combined["_is_neg"].astype(int) * 4
+        + combined["_is_env"].astype(int) * 2
+        + combined["_is_pos"].astype(int)
+    )
+    combined = (
+        combined
+        .sort_values(["plot_group", "_sort", "plot_sample_id"])
+        .reset_index(drop=True)
+    )
+
+    # Column order: biological groups alphabetically first, then controls last.
+    control_keywords = {"negative_controls", "positive_controls", "environmental_controls"}
+    all_groups  = combined["plot_group"].unique().tolist()
+    bio_groups  = sorted(g for g in all_groups if g not in control_keywords)
+    ctrl_groups = sorted(g for g in all_groups if g     in control_keywords)
+    ordered_groups = bio_groups + ctrl_groups
+
+    cols: dict[str, list[str]] = {}
+    for grp in ordered_groups:
+        samples = combined.loc[combined["plot_group"] == grp, "plot_sample_id"].tolist()
+        if samples:
+            cols[grp] = samples
+
+    if not cols:
+        return None
+
+    max_len = max(len(v) for v in cols.values())
+    wide = pd.DataFrame({
+        grp: vals + [""] * (max_len - len(vals))
+        for grp, vals in cols.items()
+    })
+
+    out_path = outdir / "report_inputs" / "sample_order.csv"
+    wide.to_csv(out_path, index=False)
+    return out_path

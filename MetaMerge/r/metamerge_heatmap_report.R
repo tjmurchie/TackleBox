@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # MetaMerge heatmap / stacked-bar report renderer
-# Version 1.0.0
+# Version 1.1.0
 
 suppressPackageStartupMessages({
   pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "patchwork",
@@ -20,16 +20,44 @@ get_arg <- function(flag, default = NULL) {
   args[idx + 1]
 }
 
-input_dir <- get_arg("--input-dir")
-out_dir   <- get_arg("--outdir", "metamerge_reports")
-top_n     <- as.integer(get_arg("--top-n", "0"))
-bar_top_n <- as.integer(get_arg("--bar-top-n", "20"))
-page_rows <- as.integer(get_arg("--page-rows", "28"))
+input_dir   <- get_arg("--input-dir")
+out_dir     <- get_arg("--outdir", "metamerge_reports")
+top_n       <- as.integer(get_arg("--top-n", "0"))
+bar_top_n   <- as.integer(get_arg("--bar-top-n", "20"))
+page_rows   <- as.integer(get_arg("--page-rows", "28"))
+order_file  <- get_arg("--sample-order")
 
 if (is.null(input_dir)) {
-  stop("Usage: Rscript metamerge_heatmap_report.R --input-dir path/to/report_inputs --outdir path/to/reports [--top-n 0] [--bar-top-n 20] [--page-rows 28]")
+  stop("Usage: Rscript metamerge_heatmap_report.R --input-dir path/to/report_inputs --outdir path/to/reports [--top-n 0] [--bar-top-n 20] [--page-rows 28] [--sample-order sample_order.csv]")
 }
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---------------------------------------------------------------------------
+# Load sample order file (if supplied)
+# ---------------------------------------------------------------------------
+# order_map: long-format table with columns plot_group_new, plot_sample_id,
+# sort_order.  Built by pivoting the wide CSV (columns = groups, rows = IDs).
+order_map <- NULL
+if (!is.null(order_file)) {
+  order_tbl <- readr::read_csv(order_file,
+                               col_types = readr::cols(.default = "c"),
+                               show_col_types = FALSE)
+  order_map <- order_tbl %>%
+    tidyr::pivot_longer(dplyr::everything(),
+                        names_to  = "plot_group_new",
+                        values_to = "plot_sample_id") %>%
+    dplyr::filter(!is.na(plot_sample_id),
+                  nchar(trimws(plot_sample_id)) > 0) %>%
+    dplyr::mutate(plot_sample_id = trimws(plot_sample_id)) %>%
+    dplyr::group_by(plot_group_new) %>%
+    dplyr::mutate(sort_order = dplyr::row_number()) %>%
+    dplyr::ungroup()
+  # Samples may intentionally appear in multiple columns (duplication across
+  # groups is supported).  Do NOT deduplicate here.
+  message("Sample order file loaded: ", nrow(order_map), " entries across ",
+          length(unique(order_map$plot_group_new)), " groups (",
+          length(unique(order_map$plot_sample_id)), " unique samples)")
+}
 
 # ---------------------------------------------------------------------------
 # Bins, colours, shape maps
@@ -115,6 +143,79 @@ subset_label <- function(group_name) {
   group_name <- as.character(group_name %||% "")
   if (group_name == "" || is.na(group_name)) return("subset")
   stringr::str_replace_all(group_name, "[^A-Za-z0-9_-]", "_")
+}
+
+# ---------------------------------------------------------------------------
+# resolve_x_order: build x-axis levels + display label map for one plot group
+# ---------------------------------------------------------------------------
+# grp_dat    — data already filtered (or filterable) to a single plot_group
+# subset_name — the plot_group name being rendered
+#
+# Returns a named character vector: names = plot_sample_id (factor levels),
+# values = display labels (with "(xN)" suffix when N > 1 merged libraries).
+# Order follows order_map when supplied, otherwise the default sort.
+resolve_x_order <- function(grp_dat, subset_name) {
+  present_ids <- unique(grp_dat$plot_sample_id)
+
+  # Per-sample replicate count for label suffix.
+  if ("n_technical_libraries" %in% names(grp_dat)) {
+    n_tech_df <- grp_dat %>%
+      dplyr::group_by(plot_sample_id) %>%
+      dplyr::summarise(
+        n_tech         = suppressWarnings(max(as.integer(n_technical_libraries), na.rm = TRUE)),
+        plot_lib_label = dplyr::first(stats::na.omit(as.character(plot_library_label))),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        n_tech = dplyr::if_else(is.na(n_tech) | is.infinite(n_tech), 1L, n_tech)
+      )
+  } else {
+    n_tech_df <- grp_dat %>%
+      dplyr::distinct(plot_sample_id, plot_library_label) %>%
+      dplyr::rename(plot_lib_label = plot_library_label) %>%
+      dplyr::mutate(n_tech = 1L)
+  }
+
+  n_tech_df <- n_tech_df %>%
+    dplyr::mutate(
+      display_label = dplyr::if_else(
+        n_tech > 1L,
+        paste0(dplyr::coalesce(plot_lib_label, plot_sample_id), " (x", n_tech, ")"),
+        dplyr::coalesce(plot_lib_label, plot_sample_id)
+      )
+    )
+
+  # Determine ordered x_levels.
+  if (!is.null(order_map)) {
+    # Use ALL samples listed in order_map for this group — including zero-detection
+    # samples that are absent from grp_dat.  Those will appear as empty columns.
+    ord <- order_map %>%
+      dplyr::filter(plot_group_new == subset_name) %>%
+      dplyr::arrange(sort_order)
+    x_levels <- as.character(ord$plot_sample_id)
+  } else {
+    level_df <- grp_dat %>%
+      dplyr::distinct(plot_sample_id, plot_library_label, is_negative_control,
+                      is_environmental_control, sample_type) %>%
+      dplyr::mutate(
+        is_neg = dplyr::if_else(is.na(is_negative_control), FALSE,
+                                as.logical(is_negative_control)),
+        is_pos = grepl("positive", tolower(as.character(sample_type))),
+        is_env = dplyr::if_else(is.na(is_environmental_control), FALSE,
+                                as.logical(is_environmental_control))
+      ) %>%
+      dplyr::arrange(is_neg, is_pos, is_env, plot_sample_id, plot_library_label)
+    x_levels <- as.character(level_df$plot_sample_id)
+  }
+
+  label_map <- stats::setNames(
+    as.character(n_tech_df$display_label[match(x_levels, n_tech_df$plot_sample_id)]),
+    x_levels
+  )
+  # Fall back to plot_sample_id for any unmatched entries.
+  missing <- is.na(label_map)
+  label_map[missing] <- names(label_map)[missing]
+  label_map
 }
 
 bin_counts <- function(x) {
@@ -283,20 +384,11 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
 
   if (!"is_environmental_control" %in% names(dat)) dat$is_environmental_control <- FALSE
 
-  x_level_df <- dat %>%
-    filter(plot_group == subset_name) %>%
-    distinct(plot_sample_id, plot_library_label, is_negative_control,
-             is_environmental_control, sample_type) %>%
-    mutate(
-      is_neg = ifelse(is.na(is_negative_control), FALSE, as.logical(is_negative_control)),
-      is_pos = grepl("positive", tolower(as.character(sample_type))),
-      is_env = ifelse(is.na(is_environmental_control), FALSE, as.logical(is_environmental_control))
-    ) %>%
-    arrange(is_neg, is_pos, is_env, plot_sample_id, plot_library_label)
-  x_levels    <- as.character(x_level_df$plot_sample_id)
-  x_label_map <- stats::setNames(
-    as.character(x_level_df$plot_library_label %||% x_level_df$plot_sample_id), x_levels)
-  x_labels <- function(x) x_label_map[x]
+  x_label_map <- resolve_x_order(dat %>% filter(plot_group == subset_name), subset_name)
+  x_levels    <- names(x_label_map)
+  x_labels    <- function(x) x_label_map[x]
+
+  if (length(x_levels) == 0) return(invisible(NULL))
 
   # Compute max page size before loop so shared_y can pad shorter pages to
   # match — this keeps the physical tile height identical on every page.
@@ -364,7 +456,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         .groups = "drop"
       ) %>%
       mutate(
-        count      = ifelse(is.na(count), 0, count),
+        count      = replace(count, is.na(count), 0),
         # Explicit factor with ALL 9 levels prevents ggplot2 from silently
         # dropping unused bins from the legend even with drop=FALSE.
         count_bin  = factor(bin_counts(count), levels = count_labels),
@@ -613,19 +705,9 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     mutate(prop = ifelse(total > 0, count / total, 0))
 
   if (!"is_environmental_control" %in% names(dat)) dat$is_environmental_control <- FALSE
-  lib_order <- dat %>%
-    distinct(plot_sample_id, plot_library_label, is_negative_control, is_environmental_control) %>%
-    mutate(
-      is_neg = ifelse(is.na(is_negative_control), FALSE, as.logical(is_negative_control)),
-      is_env = ifelse(is.na(is_environmental_control), FALSE, as.logical(is_environmental_control))
-    ) %>%
-    arrange(is_neg, is_env, plot_sample_id) %>% pull(plot_sample_id)
-  x_label_map <- dat %>%
-    distinct(plot_sample_id, plot_library_label) %>%
-    mutate(plot_library_label = ifelse(is.na(plot_library_label) | plot_library_label == "",
-                                       plot_sample_id, plot_library_label)) %>%
-    { stats::setNames(as.character(.$plot_library_label), as.character(.$plot_sample_id)) }
-  x_labels <- function(x) x_label_map[x]
+  x_label_map <- resolve_x_order(dat, subset_name)
+  lib_order   <- names(x_label_map)
+  x_labels    <- function(x) x_label_map[x]
 
   # Order groups by total abundance so dominant groups appear first / at bottom.
   grp_totals <- taxa %>%
@@ -702,7 +784,7 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     scale_fill_manual(values = fill_map_full, breaks = legend_entries,
                       limits = legend_entries, drop = FALSE,
                       na.value = "#aaaaaa", name = "Taxon") +
-    scale_x_discrete(labels = x_labels) +
+    scale_x_discrete(labels = x_labels, drop = FALSE) +
     labs(title = paste0(subset_name, " — MEGAN counts"),
          x = NULL, y = "MEGAN count of unique reads") +
     bar_theme + theme(legend.position = "none")
@@ -712,7 +794,7 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     scale_fill_manual(values = fill_map_full, breaks = legend_entries,
                       limits = legend_entries, drop = FALSE,
                       na.value = "#aaaaaa", name = "Taxon") +
-    scale_x_discrete(labels = x_labels) +
+    scale_x_discrete(labels = x_labels, drop = FALSE) +
     scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
     labs(title = paste0(subset_name, " — proportions"),
          x = NULL, y = "Proportion of unique reads assigned") +
@@ -774,19 +856,11 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
   pages <- prepare_subset(dat, subset_name, top_n = top_n, page_rows = page_rows)
   if (is.null(pages)) return(invisible(NULL))
 
-  x_level_df <- grp_dat %>%
-    distinct(plot_sample_id, plot_library_label, is_negative_control,
-             is_environmental_control, sample_type) %>%
-    mutate(
-      is_neg = ifelse(is.na(is_negative_control), FALSE, as.logical(is_negative_control)),
-      is_pos = grepl("positive", tolower(as.character(sample_type))),
-      is_env = ifelse(is.na(is_environmental_control), FALSE, as.logical(is_environmental_control))
-    ) %>%
-    arrange(is_neg, is_pos, is_env, plot_sample_id, plot_library_label)
-  x_levels    <- as.character(x_level_df$plot_sample_id)
-  x_label_map <- stats::setNames(
-    as.character(x_level_df$plot_library_label %||% x_level_df$plot_sample_id), x_levels)
-  x_labels <- function(x) x_label_map[x]
+  x_label_map <- resolve_x_order(grp_dat, subset_name)
+  x_levels    <- names(x_label_map)
+  x_labels    <- function(x) x_label_map[x]
+
+  if (length(x_levels) == 0) return(invisible(NULL))
 
   max_rows <- max(vapply(pages, length, numeric(1)))
 
@@ -851,7 +925,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
         .groups = "drop"
       ) %>%
       mutate(
-        count       = ifelse(is.na(count) | count == 0, 0, count),
+        count       = replace(count, is.na(count) | (count == 0), 0),
         plot_damage = ifelse(is.infinite(plot_damage), NA_real_, plot_damage),
         # Tiles with count>0 but no damage data show "No data"; count=0 tiles also "No data"
         dmg_for_bin = ifelse(count > 0 & !is.na(plot_damage), plot_damage, NA_real_),
@@ -1010,6 +1084,24 @@ for (f in files) {
   broad <- sub("_heatmap_input\\.tsv$", "", basename(f))
   message("Rendering ", basename(f))
   run_lines <- c(run_lines, paste("Rendering", basename(f)))
+
+  # When a sample order file is supplied, reassign plot_group from its column
+  # headers and exclude any samples not listed in the file.
+  if (!is.null(order_map)) {
+    dat <- dat %>%
+      dplyr::left_join(
+        order_map %>%
+          dplyr::select(plot_sample_id, plot_group_new) %>%
+          dplyr::distinct(),
+        by = "plot_sample_id",
+        relationship = "many-to-many"
+      ) %>%
+      dplyr::mutate(
+        plot_group = dplyr::if_else(!is.na(plot_group_new), plot_group_new, NA_character_)
+      ) %>%
+      dplyr::filter(!is.na(plot_group)) %>%
+      dplyr::select(-plot_group_new)
+  }
 
   make_heatmap(dat, "__ALL__",
                file.path(out_dir, paste0(broad, "_all_libraries_heatmap.pdf")),

@@ -413,10 +413,14 @@ def build_parser() -> argparse.ArgumentParser:
             Step 1 — validate the three core run inputs:
               metamerge check --megan-counts megan_dir/ --holi metadmg.csv --linker linker.csv
 
-            Step 2 — run the merge/classifier and optionally render graphs:
+            Step 2 — run the merge/classifier and render graphs:
               metamerge run --megan-counts megan_dir/ --holi metadmg.csv --linker linker.csv --outdir results/ --render-graphs
 
-            Step 3 — rerender graphs from existing report tables if needed:
+            Step 3 — customise plot layout and re-render (optional):
+              # Edit results/report_inputs/sample_order.csv, then:
+              metamerge report --input-dir results/report_inputs --outdir results/reports_custom --sample-order results/report_inputs/sample_order.csv
+
+            Step 3 (alt) — rerender with default layout:
               metamerge report --input-dir results/report_inputs --outdir results/reports
         """),
     )
@@ -510,16 +514,61 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    report_cmd = sub.add_parser("report", help="Render graphs from plot-input TSVs written by a previous run.", description=f"MetaMerge v{__version__} — render heatmaps and stacked-bar graphs from an existing report_inputs directory.")
+    report_cmd = sub.add_parser(
+        "report",
+        help="Render graphs from plot-input TSVs written by a previous run.",
+        description=(
+            f"MetaMerge v{__version__} — render heatmaps, damage heatmaps, and stacked-bar "
+            "graphs from an existing report_inputs directory.  Optionally supply a "
+            "sample_order.csv to customise the x-axis order and group assignments."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            Custom plot layout
+            ------------------
+            Every 'metamerge run' writes report_inputs/sample_order.csv — a wide table
+            where each column is a plot group and each row is a sample ID in display order.
+
+            Edit the file in any spreadsheet tool, then re-render:
+
+              metamerge report \\
+                  --input-dir <outdir>/report_inputs \\
+                  --outdir    <outdir>/reports_custom \\
+                  --sample-order <outdir>/report_inputs/sample_order.csv
+
+            Editing rules:
+              • Reorder rows within a column  → changes x-axis order for that group
+              • Move a sample to another column → reassigns it to that plot group
+              • Place a sample in multiple columns → it appears in each group's plot
+              • Delete a row → excludes that sample from all plots
+              • Zero-detection samples are kept and shown as empty columns
+
+            Replicate labels
+            ----------------
+            Samples with multiple technical libraries are automatically labelled
+            (x2), (x3), etc. on the x-axis, counting all libraries for that sample.
+        """),
+    )
     report_cmd.add_argument("--version", action="version", version=f"metamerge report {__version__}")
     report_cmd.add_argument("--input-dir", required=True, help="Directory containing report_inputs/*.tsv from a previous `metamerge run`.")
-    report_cmd.add_argument("--outdir", default="metamerge_reports", help="Directory where graph PDFs and run_report.txt should be written. Default: metamerge_reports/")
+    report_cmd.add_argument("--outdir", default="metamerge_reports", help="Directory where graph PDFs are written. Default: metamerge_reports/")
+    report_cmd.add_argument(
+        "--sample-order",
+        metavar="CSV",
+        help=(
+            "Path to a sample_order.csv (auto-generated in report_inputs/ by 'metamerge run'). "
+            "Each column = a plot group; each row = a sample ID in display order.  "
+            "Edit to reorder samples, reassign groups, duplicate a sample across groups, "
+            "or exclude samples.  Zero-detection samples are retained as empty columns.  "
+            "When supplied, only samples listed in this file are plotted, in exactly the order given."
+        ),
+    )
     return parser
 
 
 # ─── Sub-command implementations ──────────────────────────────────────────────
 
-def run_heatmap_script(input_dir: Path, outdir: Path) -> None:
+def run_heatmap_script(input_dir: Path, outdir: Path, sample_order: str | None = None) -> None:
     """Run the bundled R graph script if Rscript is available on PATH."""
     rscript = shutil.which("Rscript")
     if not rscript:
@@ -534,6 +583,8 @@ def run_heatmap_script(input_dir: Path, outdir: Path) -> None:
     if not script_path.exists():
         script_path = Path(__file__).resolve().parents[2] / "r" / "aedna_merge_heatmap_report.R"
     cmd = [rscript, str(script_path), "--input-dir", str(input_dir), "--outdir", str(outdir)]
+    if sample_order:
+        cmd += ["--sample-order", str(sample_order)]
     print("Running graph renderer:", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -843,6 +894,15 @@ def command_run(args) -> None:
                               --outdir {outdir}/reports
            (or re-run with --render-graphs if R is available)
 
+           To customise sample order / group assignment on the plots, edit:
+             {outdir}/report_inputs/sample_order.csv
+           Each column = a plot group; each row = a sample in display order.
+           Move a sample ID to a different column to reassign its group.
+           Delete a row to exclude that sample entirely.  Then re-render:
+             metamerge report --input-dir {outdir}/report_inputs \\
+                              --outdir {outdir}/reports_custom \\
+                              --sample-order {outdir}/report_inputs/sample_order.csv
+
         5. To adjust thresholds for a re-run, pass individual flags such as
            --damage-min, --significance-min, etc., or use --config for a full
            YAML override.  The run_summary.json records the exact config used.
@@ -874,10 +934,11 @@ def command_run(args) -> None:
 def command_report(args) -> None:
     """Render heatmaps from existing plot-input TSVs (report sub-command)."""
     _banner()
-    input_dir = Path(args.input_dir)
-    outdir    = Path(args.outdir)
+    input_dir    = Path(args.input_dir)
+    outdir       = Path(args.outdir)
+    sample_order = getattr(args, "sample_order", None)
     outdir.mkdir(parents=True, exist_ok=True)
-    run_heatmap_script(input_dir=input_dir, outdir=outdir)
+    run_heatmap_script(input_dir=input_dir, outdir=outdir, sample_order=sample_order)
 
 
 def main() -> None:

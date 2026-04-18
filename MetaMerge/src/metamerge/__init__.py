@@ -14,5 +14,5 @@ See README.md for a full description of inputs, outputs, and the classification
 logic used by the package.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Tyler Murchie"

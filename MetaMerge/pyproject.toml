@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metamerge"
-version = "1.0.0"
+version = "1.1.0"
 description = "Ensemble aDNA classification by merging conservative MEGAN count matrices with Holi/metaDMG damage outputs."
 readme = "README.md"
 requires-python = ">=3.10"
