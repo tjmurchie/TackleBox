@@ -15,7 +15,7 @@ and capture enrichment** across all kingdoms.
 audit row in `decisions.tsv` explaining exactly why it was kept, reviewed, or
 rejected.  Rejected records are written to `reject.fasta`, not deleted.
 
-Current version: **v0.7.0**
+Current version: **v1.2.0**
 
 ---
 
