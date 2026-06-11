@@ -1,0 +1,52 @@
+# TackleBox: Spinner bait-design profile
+#
+# Stricter than mapping: removes or reviews references likely to waste baits or
+# create off-target bait sequence, including adapters, Ns, low-complexity, and
+# overrepresented haplotypes.
+
+run:
+  profile_name: bait_design
+  progress_bars: true
+
+steps:
+  basic_qc: true
+  bad_keyword_screen: true
+  adapter_screen: true
+  vector_screen: false
+  taxonomy_blast: false
+  windowed_blast: false
+  cluster: false
+  cap_references: true
+  report: true
+
+basic_qc:
+  min_length: 80
+  max_length: 400000
+  max_n_fraction: 0.01
+  max_non_iupac_fraction: 0.002
+  min_shannon_entropy: 1.5
+  max_homopolymer_run: 30
+  remove_exact_duplicate_sequences: true
+  remove_duplicate_accessions: true
+
+adapter_screen:
+  max_mismatch: 2
+  reject_internal_hits: true
+  review_terminal_hits: true
+  terminal_window_bp: 25
+  min_adapter_match_length: 12
+
+cluster:
+  method: vsearch
+  identity: 0.98
+  max_reps_per_cluster: 1
+
+capping:
+  mode: species_marker
+  max_per_species_marker:
+    Mito: 8
+    Plastid: 8
+    NucMark: 6
+    Other: 1
+  max_per_species_total: 20
+  cap_action: review

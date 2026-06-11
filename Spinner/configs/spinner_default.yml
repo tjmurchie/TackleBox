@@ -1,0 +1,136 @@
+# TackleBox: Spinner default configuration
+#
+# This profile is balanced: it removes clear technical problems, reviews uncertain
+# cases, and caps extreme over-representation. Use it as the starting point.
+
+run:
+  profile_name: default
+  progress_bars: true
+  write_reject_fasta: true
+  write_review_fasta: true
+  fail_on_missing_external_tool: false
+
+inputs:
+  regions_config: ""
+  species_kingdom: ""
+  adapters_tsv: "configs/adapters_default.tsv"
+  bad_keywords_tsv: "configs/bad_keywords.tsv"
+
+# Whole stages can be toggled here.
+steps:
+  basic_qc: true
+  classify_regions: true
+  bad_keyword_screen: true
+  adapter_screen: true
+  vector_screen: false      # Requires UniVec/VecScreen-style BLAST DB
+  taxonomy_blast: false     # Requires BLAST DB such as RefSeq or nt
+  windowed_blast: false     # Planned deeper chimerism screen
+  cluster: false            # Requires vsearch or cd-hit-est
+  cap_references: true
+  fcs_adaptor: false        # Planned/optional NCBI FCS-adaptor wrapper
+  fcs_gx: false             # Planned/optional NCBI FCS-GX wrapper
+  report: true
+
+basic_qc:
+  min_length: 50
+  max_length: 400000
+  max_n_fraction: 0.05
+  max_non_iupac_fraction: 0.01
+  min_shannon_entropy: 1.2
+  max_homopolymer_run: 60
+  remove_exact_duplicate_sequences: true
+  remove_duplicate_accessions: true
+
+classification:
+  default_class_if_no_match: Other
+  coerce_unknown_plastid_to_plant: true
+
+adapter_screen:
+  max_mismatch: 2
+  scan_reverse_complement: true
+  reject_internal_hits: true
+  review_terminal_hits: true
+  terminal_window_bp: 25
+  min_adapter_match_length: 12
+  default_action: reject
+
+bad_keywords:
+  case_sensitive: false
+  default_action: review
+
+vector_screen:
+  method: blastn
+  blast_db: ""              # e.g. /path/to/UniVec_blastdb/UniVec
+  blast_task: blastn-short
+  min_hit_length: 20
+  min_pident: 90
+  reject_internal_hits: true
+  review_terminal_hits: true
+  terminal_window_bp: 25
+  outfmt: "6 qseqid sseqid pident length qstart qend sstart send evalue bitscore"
+
+taxonomy_blast:
+  blast_db: ""              # e.g. RefSeq, refseq_genomic, nt subset, or custom curated DB
+  blast_task: megablast
+  max_target_seqs: 10
+  max_hsps: 5
+  evalue: "1e-10"
+  min_qcov: 50
+  min_pident: 80
+  expected_taxon_level: genus
+  reject_cross_kingdom: true
+  review_if_no_expected_match: true
+  outfmt: "6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids sscinames"
+  taxdump_dir: ""
+
+cluster:
+  method: vsearch
+  identity: 0.99
+  by: [species_guess, marker_class]
+  vsearch_path: vsearch
+  cdhit_path: cd-hit-est
+  max_reps_per_cluster: 1
+
+capping:
+  mode: species_marker
+  uncapped_classes: []
+  max_per_species_marker:
+    Mito: 20
+    Plastid: 20
+    NucMark: 10
+    Other: 5
+  max_per_species_total: 50
+  cap_action: review
+
+# v0.4-alpha optional advanced screens
+# Windowed BLAST chops long references into overlapping windows and BLASTs each
+# window. Discordant top hits across windows suggest a chimeric or mixed-origin
+# sequence. This is off by default because it requires a BLAST database and can
+# be slow.
+windowed_blast:
+  blast_db: ""              # e.g. /path/to/refseq_blastdb/refseq or /path/to/nt
+  blast_task: megablast
+  enabled_for_min_length: 1000
+  window_size: 500
+  window_step: 250
+  max_target_seqs: 3
+  max_hsps: 1
+  evalue: "1e-10"
+  min_conflicting_windows: 2
+  conflict_action: review   # review or reject
+  outfmt: "6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids sscinames"
+
+# External hook for NCBI FCS-adaptor or a local postprocessor. Spinner does not
+# assume one fixed FCS output format; instead, point results_tsv to a simple TSV
+# with an accession/qseqid/query/record_key column and status/action columns.
+fcs_adaptor:
+  command: ""               # e.g. "fcs-adaptor --input {input_fasta} --output {outprefix}.fcs_adaptor.raw"
+  results_tsv: ""           # default if blank: OUTPREFIX.fcs_adaptor.tsv
+  reject_on_any_hit: true
+
+# External hook for FCS-GX or a local foreign-contamination classifier.
+fcs_gx:
+  command: ""               # e.g. "fcs-gx --input {input_fasta} --output {outprefix}.fcs_gx.raw"
+  results_tsv: ""           # default if blank: OUTPREFIX.fcs_gx.tsv
+  tax_id: ""
+  reject_divisions: []

@@ -1,0 +1,176 @@
+adapter_screen:
+  default_action: reject
+  max_mismatch: 2
+  min_adapter_match_length: 12
+  reject_internal_hits: true
+  review_terminal_hits: true
+  scan_reverse_complement: true
+  terminal_window_bp: 25
+bad_keywords:
+  case_sensitive: false
+  default_action: review
+basic_qc:
+  max_homopolymer_run: 60
+  max_length: 400000
+  max_n_fraction: 0.05
+  max_non_iupac_fraction: 0.01
+  min_length: 50
+  min_shannon_entropy: 1.2
+  remove_duplicate_accessions: true
+  remove_exact_duplicate_sequences: true
+capping:
+  cap_action: review
+  max_per_species_marker:
+    Mito: 20
+    NucMark: 10
+    Other: 5
+    Plastid: 20
+  max_per_species_total: 50
+  mode: species_marker
+  uncapped_classes: []
+classification:
+  coerce_unknown_plastid_to_plant: true
+  default_class_if_no_match: Other
+cluster:
+  by:
+  - species_guess
+  - marker_class
+  cdhit_path: cd-hit-est
+  identity: 0.99
+  max_reps_per_cluster: 1
+  method: vsearch
+  nonrepresentative_action: review
+  vsearch_path: vsearch
+decision_rules:
+  hard_reject_reasons:
+  - adapter_internal
+  - vector_internal
+  - duplicate_accession
+  - duplicate_sequence
+  - length_below_min
+  - length_above_max
+  - n_fraction_high
+  - non_iupac_fraction_high
+  - bad_keyword_reject
+  - taxonomy_cross_kingdom
+  - fcs_adaptor_hit
+  - fcs_gx_contaminant
+  review_reasons:
+  - adapter_terminal
+  - vector_terminal
+  - low_complexity
+  - homopolymer_long
+  - bad_keyword_review
+  - taxonomy_no_expected_match
+  - taxonomy_not_checked
+  - windowed_blast_conflict
+  - cluster_nonrepresentative
+  - cap_exceeded
+  - fcs_adaptor_review
+  - fcs_gx_review
+  score_thresholds:
+    keep_min: 80
+    review_min: 50
+fcs_adaptor:
+  command: ''
+  reject_on_any_hit: true
+  results_tsv: ''
+fcs_gx:
+  command: ''
+  reject_divisions: []
+  results_tsv: ''
+  tax_id: ''
+inputs:
+  adapters_tsv: configs/adapters_default.tsv
+  bad_keywords_tsv: configs/bad_keywords.tsv
+  regions_config: configs/regions_config_example.tsv
+  species_kingdom: examples/minimal_input/example_species_kingdom.tsv
+run:
+  fail_on_missing_external_tool: false
+  keep_temp_files: false
+  profile_name: default
+  progress_bars: true
+  write_reject_fasta: true
+  write_review_fasta: true
+scoring:
+  adapter_internal: -100
+  adapter_terminal: -40
+  bad_keyword_reject: -100
+  bad_keyword_review: -30
+  cap_exceeded: -30
+  cluster_nonrepresentative: -25
+  cluster_representative: 5
+  complete_organelle: 5
+  duplicate_accession: -100
+  duplicate_sequence: -100
+  fcs_adaptor_hit: -100
+  fcs_adaptor_review: -40
+  fcs_gx_contaminant: -100
+  fcs_gx_review: -40
+  homopolymer_long: -20
+  length_above_max: -100
+  length_below_min: -100
+  low_complexity: -25
+  n_fraction_high: -50
+  non_iupac_fraction_high: -40
+  refseq_preferred: 10
+  start: 100
+  taxonomy_cross_kingdom: -100
+  taxonomy_no_expected_match: -35
+  taxonomy_same_genus: 10
+  taxonomy_same_species: 20
+  vector_internal: -100
+  vector_terminal: -50
+  voucher_keyword: 5
+  windowed_blast_conflict: -60
+steps:
+  adapter_screen: true
+  bad_keyword_screen: true
+  basic_qc: true
+  cap_references: true
+  classify_regions: true
+  cluster: false
+  fcs_adaptor: false
+  fcs_gx: false
+  report: true
+  taxonomy_blast: false
+  vector_screen: false
+  windowed_blast: false
+taxonomy_blast:
+  blast_db: ''
+  blast_task: megablast
+  evalue: 1e-10
+  expected_taxon_level: genus
+  max_hsps: 5
+  max_target_seqs: 10
+  min_pident: 80
+  min_qcov: 50
+  outfmt: 6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids
+    sscinames
+  reject_cross_kingdom: true
+  review_if_no_expected_match: true
+  taxdump_dir: ''
+vector_screen:
+  blast_db: ''
+  blast_task: blastn-short
+  method: blastn
+  min_hit_length: 20
+  min_pident: 90
+  outfmt: 6 qseqid sseqid pident length qstart qend sstart send evalue bitscore
+  reject_internal_hits: true
+  review_terminal_hits: true
+  terminal_window_bp: 25
+windowed_blast:
+  blast_db: ''
+  blast_task: megablast
+  conflict_action: review
+  enabled_for_min_length: 1000
+  evalue: 1e-10
+  max_hsps: 1
+  max_target_seqs: 3
+  min_conflicting_windows: 2
+  min_pident: 80.0
+  outfmt: 6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids
+    sscinames
+  window_size: 500
+  window_step: 250

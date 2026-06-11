@@ -1,0 +1,8 @@
+keyword	action	reason
+synthetic construct	reject	Synthetic/artificial construct — not a biological reference
+vector	reject	Header suggests vector/cloning sequence
+UNVERIFIED	review	NCBI unverified record; review but may be only available reference
+PREDICTED	review	Predicted/model sequence; review but may be useful as reference
+low quality	review	Header flags low quality; review for usability
+plasmid	review	May be biological or vector-derived depending on context
+clone	review	Clone-derived record; review for vector/adaptor carryover

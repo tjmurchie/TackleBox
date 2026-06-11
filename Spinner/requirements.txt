@@ -1,0 +1,7 @@
+pyyaml>=6.0
+
+# Optional but recommended for richer progress display:
+# tqdm>=4.0
+
+# Development / testing:
+# pytest>=7.0

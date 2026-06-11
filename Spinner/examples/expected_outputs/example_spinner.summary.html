@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head><meta charset='utf-8'><title>Spinner 0.5.0 Summary</title>
+<style>
+body{font-family:monospace,Courier;max-width:1100px;margin:0 auto;padding:24px;color:#222}
+h1{border-bottom:3px solid #333;padding-bottom:6px}
+h2{border-bottom:1px solid #ccc;color:#555;margin-top:2em}
+table{border-collapse:collapse;width:100%;margin-bottom:1.2em}
+th,td{border:1px solid #ddd;padding:7px 10px;text-align:left}
+th{background:#f0f0f0;font-weight:bold}
+tr:nth-child(even){background:#fafafa}
+.stat-wrap{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:1.5em}
+.stat-box{flex:1;min-width:150px;border:1px solid #ddd;border-radius:6px;
+          padding:18px;text-align:center;background:#fafafa}
+.stat-n{font-size:2.4em;font-weight:bold;line-height:1}
+.KEEP .stat-n{color:#2a7}
+.REVIEW .stat-n{color:#b70}
+.REJECT .stat-n{color:#c33}
+.KEEP .stat-label{color:#2a7}
+.REVIEW .stat-label{color:#b70}
+.REJECT .stat-label{color:#c33}
+.stat-label{font-size:1.1em;margin-top:6px}
+.none{color:#999;font-style:italic}
+</style></head>
+<body>
+<h1>Spinner 0.5.0 Summary Report</h1>
+<p>Generated: 2026-05-04 20:07:40 &nbsp;|&nbsp; Total records: <strong>8</strong></p>
+<h2>Decision summary</h2>
+<div class="stat-wrap">
+<div class="stat-box KEEP"><div class="stat-n">3</div><div class="stat-label">KEEP</div></div>
+<div class="stat-box REVIEW"><div class="stat-n">1</div><div class="stat-label">REVIEW</div></div>
+<div class="stat-box REJECT"><div class="stat-n">4</div><div class="stat-label">REJECT</div></div>
+</div>
+<h2>Decisions by marker class</h2>
+<table><tr><th>Marker class</th><th>KEEP</th><th>REVIEW</th><th>REJECT</th></tr><tr><td>Mito</td><td>1</td><td>0</td><td>1</td></tr><tr><td>Plastid</td><td>1</td><td>0</td><td>1</td></tr><tr><td>NucMark</td><td>1</td><td>0</td><td>2</td></tr><tr><td>Other</td><td>0</td><td>1</td><td>0</td></tr></table>
+<h2>Top reasons (keep / review / reject)</h2>
+<table><tr><th>Reason</th><th>Count</th></tr><tr><td>adapter_terminal</td><td>1</td></tr><tr><td>duplicate_accession</td><td>1</td></tr><tr><td>duplicate_sequence</td><td>1</td></tr><tr><td>n_fraction_high</td><td>1</td></tr><tr><td>low_complexity</td><td>1</td></tr><tr><td>homopolymer_long</td><td>1</td></tr><tr><td>bad_keyword_reject</td><td>1</td></tr></table>
+<h2>Adapter hits</h2>
+<table><tr><th>Adapter name</th><th>Records hit</th></tr><tr><td>Illumina_TruSeq_Universal</td><td>1</td></tr></table>
+<h2>Bad keyword hits</h2>
+<table><tr><th>Keyword</th><th>Action</th><th>Count</th></tr><tr><td>UNVERIFIED</td><td>reject</td><td>1</td></tr></table>
+<h2>Taxonomy BLAST status</h2>
+<p class="none">Taxonomy BLAST was not run.</p>
+<h2>Windowed BLAST status</h2>
+<p class="none">Windowed BLAST was not run.</p>
+<h2>Output files</h2>
+<ul><li><code>examples/expected_outputs/example_spinner.decisions.tsv</code></li><li><code>examples/expected_outputs/example_spinner.summary.tsv</code></li><li><code>examples/expected_outputs/example_spinner.keep.fasta</code></li><li><code>examples/expected_outputs/example_spinner.review.fasta</code></li><li><code>examples/expected_outputs/example_spinner.reject.fasta</code></li></ul>
+</body></html>

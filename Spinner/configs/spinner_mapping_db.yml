@@ -1,0 +1,44 @@
+# TackleBox: Spinner mapping database profile
+#
+# More inclusive than bait design. Keeps more haplotype/reference diversity while
+# still removing clear technical contaminants and duplicate/problem records.
+
+run:
+  profile_name: mapping_db
+  progress_bars: true
+
+steps:
+  basic_qc: true
+  bad_keyword_screen: true
+  adapter_screen: true
+  vector_screen: false
+  taxonomy_blast: false
+  windowed_blast: false
+  cluster: false
+  cap_references: true
+  report: true
+
+basic_qc:
+  min_length: 50
+  max_length: 400000
+  max_n_fraction: 0.05
+  max_non_iupac_fraction: 0.01
+  min_shannon_entropy: 1.1
+  max_homopolymer_run: 80
+  remove_exact_duplicate_sequences: true
+  remove_duplicate_accessions: true
+
+cluster:
+  method: vsearch
+  identity: 0.995
+  max_reps_per_cluster: 2
+
+capping:
+  mode: species_marker
+  max_per_species_marker:
+    Mito: 50
+    Plastid: 50
+    NucMark: 30
+    Other: 10
+  max_per_species_total: 100
+  cap_action: review

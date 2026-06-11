@@ -1,0 +1,24 @@
+name	sequence	max_mismatch	action
+# --- Illumina ---
+Illumina_TruSeq_Universal	AGATCGGAAGAGCACACGTCTGAACTCCAGTCA	2	reject
+Illumina_TruSeq_Indexed	AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT	2	reject
+Illumina_short_common	AGATCGGAAGAGC	1	reject
+Nextera_ME	CTGTCTCTTATACACATCT	1	reject
+P5_partial	AATGATACGGCGACCACCGAGATCTACAC	2	reject
+P7_partial	CAAGCAGAAGACGGCATACGAGAT	2	reject
+# --- 454 / Roche ---
+# Titanium FLX ligation adapters; common in GenBank submissions from 2005–2014.
+454_Adapter_A	CGTATCGCCTCCCTCGCGCCATCAG	2	reject
+454_Adapter_B	CTATGCGCCTTGCCAGCCCGCTCAG	2	reject
+# --- Ion Torrent ---
+# ThermoFisher Ion PGM / Proton adapters.
+IonTorrent_P1	CCACTACGCCTCCGCTTTCCTCTCTATGGGCAGTCGGTGAT	2	reject
+IonTorrent_A	CCATCTCATCCCTGCGTGTCTCCGACTCAG	2	reject
+# --- BGI / MGI (DNBSEQ / MGISEQ) ---
+# MGIEasy library adapters; increasingly common in recent submissions.
+BGI_Read1	AAGTCGGAGGCCAAGCGGTCTTAGGAAGACAA	2	reject
+BGI_Read2	AAGTCGGATCGTAGCCATGTCGTTCTGTGAGCCAAGGAGTTG	2	reject
+BGI_short_common	AAGTCGGAGGCCAAGCGGT	1	reject
+# --- PacBio ---
+# SMRTbell universal hairpin adapter; contaminates assemblies with poor SMRT filtering.
+PacBio_SMRTbell	ATCTCTCTCTTTTCCTCCTCCTCCGTTGTTGTTGTTGAGAGAGAT	3	reject

@@ -1,0 +1,34 @@
+# Spinner config: Ancient DNA metagenomics and capture enrichment
+#
+# As of v0.7.0, Spinner's DEFAULT_CONFIG is aDNA-first.  This profile now
+# serves as an explicit named profile for documentation and reproducibility.
+# All settings here match the defaults; override only what differs for your run.
+#
+# Key default behaviours (all set by DEFAULT_CONFIG, not just this file):
+#   - cap_references: false    — all haplotype diversity retained for mapping/capture
+#   - max_n_fraction: 0.20     — ancient assemblies routinely have 10-20% N
+#   - n_fraction_high: score penalty (-20), NOT a hard reject
+#   - rescue_sole_representatives: true — best REVIEW promoted if species has 0 KEEP
+#   - BLAST min_pident: 70.0   — divergent ancient sequences tolerated
+#   - review_if_no_expected_match: false — rare taxa absent from BLAST DB are fine
+#   - keep_min: 65, review_min: 30 — prefer REVIEW over REJECT for borderline records
+#   - UNVERIFIED/PREDICTED/low quality → review, not reject (see bad_keywords.tsv)
+#
+# Usage:
+#   ./Spinner filter \
+#     --fasta refs.fasta \
+#     --species-kingdom species_kingdom.tsv \
+#     --regions-config configs/regions_config_example.tsv \
+#     --adapters configs/adapters_default.tsv \
+#     --bad-keywords configs/bad_keywords.tsv \
+#     --config configs/spinner_ancient_metagenome.yml \
+#     --outprefix /path/to/output/project_name.spinner
+#
+# For BLAST-enabled runs, add taxonomy_blast.blast_db + taxdump_dir in a local
+# YAML override merged on top of this file.
+
+run:
+  profile_name: "ancient_metagenome"
+
+basic_qc:
+  min_length: 100             # 100 bp minimum; 80 bp is minimum bait-able for capture enrichment

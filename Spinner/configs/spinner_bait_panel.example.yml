@@ -1,0 +1,96 @@
+# TackleBox: Spinner bait panel profile
+#
+# Strict curation for sequences destined for capture enrichment bait synthesis
+# via TackleBox: FlyForge.  FlyForge performs its own bait design filtering, so
+# Spinner's role here is to eliminate sequences that would produce bad baits:
+# chimeric, adapter-contaminated, N-rich, low-complexity, or taxonomically wrong.
+#
+# Key differences vs reference_db profile:
+#   - Stricter QC thresholds (N, entropy, homopolymer, min length)
+#   - Clustering at 0.98 — FlyForge handles bait spacing/tiling, not Spinner
+#   - Lower per-species caps — FlyForge optimises coverage, not Spinner
+#
+# Taxonomy method: MMSeqs2 easy-search, search-type 3 (translated nuc→protein)
+#   against NCBI NR.  Cross-kingdom contamination (plant ref hitting bacteria)
+#   is hard-rejected.  No-hit sequences are flagged for REVIEW — appropriate
+#   for rare/extinct taxa absent from NR.
+#
+# Windowed BLAST: disabled.  NCBI-sourced reference sequences are not PCR
+#   chimeras.  Short-amplicon chimeras are caught by chimera_screen (uchime_denovo).
+#
+# Pipeline: basic QC → adapter/keyword screen → taxonomy check (MMSeqs2 vs NR)
+#           → vsearch uchime (short amplicons) → clustering → capping → FlyForge
+#
+# SETUP: Copy this file to spinner_bait_panel.yml and fill in the paths below.
+#   Required databases:
+#     1. MMSeqs2 NR — see spinner_reference_db.example.yml for instructions.
+#     2. NCBI taxdump — see spinner_reference_db.example.yml for instructions.
+#
+# Usage:
+#   ./Spinner filter \
+#     --fasta your_refs.fasta \
+#     --species-kingdom your_species_kingdom.tsv \
+#     --mode bait_panel \
+#     --outprefix /path/to/output/run_name
+
+run:
+  profile_name: bait_panel
+
+steps:
+  basic_qc: true
+  classify_regions: true
+  bad_keyword_screen: true
+  adapter_screen: true
+  vector_screen: false          # enable if UniVec DB available
+  taxonomy_blast: true
+  windowed_blast: false         # disabled — NCBI refs are not chimeras; uchime handles amplicons
+  chimera_screen: true          # vsearch uchime — catches PCR chimeras in short amplicons
+  cluster: true
+  cap_references: true
+  report: true
+
+basic_qc:
+  min_length: 80                # minimum bait-able sequence length for capture enrichment
+  max_length: 400000
+  max_n_fraction: 0.01          # N-masked regions waste bait synthesis budget
+  max_non_iupac_fraction: 0.002
+  min_shannon_entropy: 1.5      # low-complexity sequences hybridize poorly or non-specifically
+  max_homopolymer_run: 30       # long homopolymer runs cause synthesis failures
+  remove_exact_duplicate_sequences: true
+  remove_duplicate_accessions: true
+
+taxonomy_blast:
+  method: mmseqs2
+  blast_db: /path/to/mmseqs2/Swiss-Prot/Swiss-Prot  # <-- MMSeqs2 Swiss-Prot (recommended) or NR
+  search_type: 2                # translated nuc→protein (blastx-equivalent); Swiss-Prot/NR are protein
+  num_threads: 8
+  max_target_seqs: 5
+  evalue: "1e-5"                # slightly relaxed vs blastn to catch distant cross-kingdom hits
+  min_qcov: 50.0                # applied after alnlen×3 AA→nt conversion (code handles this)
+  min_pident: 30.0              # AA percent identity; 30% reliably separates kingdoms
+  expected_taxon_level: genus
+  reject_cross_kingdom: true
+  review_if_no_expected_match: true
+  taxdump_dir: /path/to/ncbi/taxonomy  # <-- set to directory containing nodes.dmp + names.dmp
+
+chimera_screen:
+  method: uchime_denovo
+  reject_chimeras: true
+  review_borderline: true       # borderline remains review so FlyForge can inspect
+
+cluster:
+  method: vsearch
+  identity: 0.98                # slightly looser than reference_db — FlyForge handles tiling density
+  by: [species_guess, marker_class]
+  max_reps_per_cluster: 1
+
+capping:
+  mode: species_marker
+  max_per_species_marker:
+    Mito: 8
+    Plastid: 8
+    NucMark: 6
+    Other: 1
+  max_per_species_total: 20
+  cap_action: review
+  rescue_sole_representatives: true   # still want at least one record per species for coverage

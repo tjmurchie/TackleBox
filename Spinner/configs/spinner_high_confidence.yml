@@ -1,0 +1,80 @@
+# TackleBox: Spinner high-confidence profile
+#
+# Use this when you want a conservative, publication-facing reference set.
+# It keeps the fast internal checks on, enables capping, and is designed to be
+# paired with taxonomy_blast/vector_screen once you provide local databases.
+
+run:
+  profile_name: high_confidence
+  progress_bars: true
+  write_reject_fasta: true
+  write_review_fasta: true
+  fail_on_missing_external_tool: false
+
+steps:
+  basic_qc: true
+  classify_regions: true
+  bad_keyword_screen: true
+  adapter_screen: true
+  vector_screen: false       # turn on after setting vector_screen.blast_db
+  taxonomy_blast: false      # turn on after setting taxonomy_blast.blast_db
+  windowed_blast: false      # turn on for long references; requires BLAST DB
+  cluster: false             # turn on if vsearch is installed
+  cap_references: true
+  fcs_adaptor: false
+  fcs_gx: false
+  report: true
+
+basic_qc:
+  min_length: 80
+  max_length: 400000
+  max_n_fraction: 0.02
+  max_non_iupac_fraction: 0.005
+  min_shannon_entropy: 1.4
+  max_homopolymer_run: 40
+  remove_exact_duplicate_sequences: true
+  remove_duplicate_accessions: true
+
+adapter_screen:
+  max_mismatch: 2
+  reject_internal_hits: true
+  review_terminal_hits: true
+  terminal_window_bp: 25
+  min_adapter_match_length: 12
+
+taxonomy_blast:
+  blast_db: ""              # RefSeq is conservative; nt/custom DB is more sensitive
+  blast_task: megablast
+  max_target_seqs: 20
+  max_hsps: 5
+  evalue: "1e-20"
+  min_qcov: 70
+  min_pident: 85
+  expected_taxon_level: genus
+  reject_cross_kingdom: true
+  review_if_no_expected_match: true
+  outfmt: "6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids sscinames"
+
+windowed_blast:
+  blast_db: ""
+  enabled_for_min_length: 1000
+  window_size: 500
+  window_step: 250
+  min_conflicting_windows: 2
+  conflict_action: review
+
+cluster:
+  method: vsearch
+  identity: 0.99
+  by: [species_guess, marker_class]
+  max_reps_per_cluster: 1
+
+capping:
+  mode: species_marker
+  max_per_species_marker:
+    Mito: 10
+    Plastid: 10
+    NucMark: 8
+    Other: 2
+  max_per_species_total: 25
+  cap_action: review

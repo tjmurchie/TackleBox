@@ -1,0 +1,5 @@
+keyword	action	reason
+synthetic construct	reject	Synthetic/artificial construct — not a biological sequence
+vector	reject	Header suggests vector sequence (plasmid/cloning vector)
+plasmid	review	Plasmid-derived record — review context (biological or vector)
+clone	review	Clone-derived record — review for vector/adaptor carryover

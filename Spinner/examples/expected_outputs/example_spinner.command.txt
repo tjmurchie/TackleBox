@@ -1,0 +1,2 @@
+# Spinner command
+/home/tyler.murchie/software/TackleBox/Spinner/Spinner.py filter --fasta examples/minimal_input/example_refs.fasta --species-kingdom examples/minimal_input/example_species_kingdom.tsv --regions-config configs/regions_config_example.tsv --adapters configs/adapters_default.tsv --bad-keywords configs/bad_keywords.tsv --config configs/spinner_default.yml --outprefix examples/expected_outputs/example_spinner
