@@ -1,7 +1,7 @@
 # TackleBox: FlyForge
 
 <p align="center">
-  <img src="../assets/TackleBox-FlyForge.png" alt="TackleBox: FlyForge header" width="700">
+  <img src="../assets/FlyForge.png" alt="TackleBox: FlyForge header" width="700">
 </p>
 
 **FlyForge** is a bait/probe designer for hybridization capture enrichment with integrated support for **in-house RNA bait synthesis from DNA oligo pools**. It is built for both focused projects (for example, single mitogenomes or locus panels) and larger multi-target panels.

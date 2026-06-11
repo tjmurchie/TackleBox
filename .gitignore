@@ -1,6 +1,21 @@
 __pycache__/
 *.pyc
 *.pyo
+.neotoma_cache/
+.pbdb_cache/
+.gbif_cache/
+FlyGuide/FlyGuide_paleo_sources_patch.zip
+FlyGuide/FlyGuide_paleo_sources_patched/
+
+# FlyGuide script output artifacts (generated when running scripts locally)
+FlyGuide/*.rejected.tsv
+FlyGuide/*.summary.json
+FlyGuide/*_species_search.txt
+FlyGuide/*_species_kingdom.tsv
+FlyGuide/global_quaternary_*
+FlyGuide/canada_mammals_*
+FlyGuide/tui_*
+FlyGuide/_test_outputs/
 *.egg
 *.egg-info/
 .pytest_cache/
@@ -9,3 +24,17 @@ build/
 venv/
 .venv/
 .DS_Store
+
+# Personal notes — not for public distribution
+Spinner/docs/personal_testing_notes.md
+Spinner/docs/SPINNER_FULL_OUTLINE_FOR_AI.md
+Spinner/docs/SPINNER_V040_ALPHA_HANDOFF.md
+Spinner/docs/developer_handoff.md
+
+# Configs containing local server database paths — not for public distribution.
+# These files are kept locally for reproducibility but must not be pushed to GitHub.
+Spinner/configs/spinner_reference_db.yml
+Spinner/configs/spinner_bait_panel.yml
+Spinner/configs/spinner_with_nt_blast.yml
+Spinner/configs/spinner_with_nt_blast_amplicons.yml
+Spinner/configs/spinner_CO1_blast.yml
