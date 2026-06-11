@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "data": [
+    {"taxonid": 1001, "taxoncode": "MAMMPRI", "taxonname": "Mammuthus primigenius", "valid": true, "highertaxonid": 1, "extinct": true, "taxagroupid": "MAM"},
+    {"taxonid": 1002, "taxoncode": "BISBISANT", "taxonname": "Bison bison antiquus", "valid": true, "highertaxonid": 1, "extinct": true, "taxagroupid": "MAM"},
+    {"taxonid": 1003, "taxoncode": "CANISSPP", "taxonname": "Canis spp.", "valid": true, "highertaxonid": 1, "extinct": false, "taxagroupid": "MAM"},
+    {"taxonid": 1004, "taxoncode": "AMBTYPE", "taxonname": "Ambrosia-type", "valid": true, "highertaxonid": 2, "extinct": false, "taxagroupid": "VPL"}
+  ],
+  "message": "fixture"
+}

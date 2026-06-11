@@ -1,0 +1,5 @@
+SpeciesID,Species,LocalityID,Locality,Country,Continent,Latitude,Longitude,MinMa,MaxMa,Status
+s1,Bison bison antiquus,l1,Port Eliza,Canada,North America,49.2,-126.4,0.0117,0.12,extinct
+s2,Mammuthus primigenius,l2,Some Eurasia Site,Russia,Eurasia,55.2,30.1,0.012,0.05,extinct
+s3,Canis sp.,l3,Laetoli,Tanzania,Africa,-2.99,35.35,0.02,0.2,extinct
+s4,Rhinocerotidae indet.,l4,Messy Site,France,Europe,47.0,2.0,0.02,0.2,extinct

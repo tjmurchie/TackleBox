@@ -1,0 +1,69 @@
+{
+  "records": [
+    {
+      "occurrence_no": "1",
+      "collection_no": "100",
+      "identified_name": "Bison bison antiquus",
+      "accepted_name": "Bison bison antiquus",
+      "identified_no": "2001",
+      "accepted_no": "2001",
+      "early_interval": "Late Pleistocene",
+      "late_interval": "Holocene",
+      "max_ma": "0.12",
+      "min_ma": "0.0117",
+      "lng": "-123.1",
+      "lat": "49.2",
+      "phylum": "Chordata",
+      "class": "Mammalia",
+      "order": "Artiodactyla",
+      "family": "Bovidae",
+      "genus": "Bison"
+    },
+    {
+      "occurrence_no": "2",
+      "collection_no": "101",
+      "identified_name": "Mammuthus primigenius",
+      "accepted_name": "Mammuthus primigenius",
+      "identified_no": "2002",
+      "accepted_no": "2002",
+      "early_interval": "Late Pleistocene",
+      "max_ma": "0.05",
+      "min_ma": "0.012",
+      "lng": "30.1",
+      "lat": "55.2",
+      "phylum": "Chordata",
+      "class": "Mammalia",
+      "order": "Proboscidea",
+      "family": "Elephantidae",
+      "genus": "Mammuthus"
+    },
+    {
+      "occurrence_no": "3",
+      "collection_no": "102",
+      "identified_name": "Canis sp.",
+      "accepted_name": "Canis",
+      "identified_no": "2003",
+      "accepted_no": "2003",
+      "early_interval": "Pleistocene",
+      "max_ma": "0.2",
+      "min_ma": "0.02",
+      "lng": "35.0",
+      "lat": "-6.0",
+      "phylum": "Chordata",
+      "class": "Mammalia",
+      "order": "Carnivora",
+      "family": "Canidae",
+      "genus": "Canis"
+    },
+    {
+      "occurrence_no": "4",
+      "collection_no": "103",
+      "identified_name": "not a taxon ???",
+      "accepted_name": "not a taxon ???",
+      "max_ma": "0.2",
+      "min_ma": "0.02",
+      "lng": "10.0",
+      "lat": "50.0"
+    }
+  ]
+}

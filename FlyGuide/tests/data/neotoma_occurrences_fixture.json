@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "data": [
+    {"occid": 1, "sample": {"taxonid": 1001, "taxonname": "Mammuthus primigenius", "value": 2, "sampleunits": "NISP"}, "age": {"age": 15000, "ageolder": 16000, "ageyounger": 14000}, "site": {"datasetid": 10, "siteid": 100, "sitename": "Test Cave", "location": "{\"type\":\"Point\",\"coordinates\":[-120,50]}", "datasettype": "vertebrate fauna", "database": "FAUNMAP"}},
+    {"occid": 2, "sample": {"taxonid": 1002, "taxonname": "Bison bison antiquus", "value": 1, "sampleunits": "NISP"}, "age": {"age": 12000, "ageolder": 13000, "ageyounger": 11000}, "site": {"datasetid": 10, "siteid": 100, "sitename": "Test Cave", "location": "{\"type\":\"Point\",\"coordinates\":[-120,50]}", "datasettype": "vertebrate fauna", "database": "FAUNMAP"}},
+    {"occid": 3, "sample": {"taxonid": 1002, "taxonname": "Bison bison antiquus", "value": 4, "sampleunits": "NISP"}, "age": {"age": 17000, "ageolder": 18000, "ageyounger": 16000}, "site": {"datasetid": 11, "siteid": 101, "sitename": "Other Cave", "location": "{\"type\":\"Point\",\"coordinates\":[-121,51]}", "datasettype": "vertebrate fauna", "database": "FAUNMAP"}},
+    {"occid": 4, "sample": {"taxonid": 1003, "taxonname": "Canis spp.", "value": 8, "sampleunits": "NISP"}, "age": {"age": 10000, "ageolder": 11000, "ageyounger": 9000}, "site": {"datasetid": 12, "siteid": 102, "sitename": "Canid Cave", "location": "{\"type\":\"Point\",\"coordinates\":[-122,52]}", "datasettype": "vertebrate fauna", "database": "FAUNMAP"}},
+    {"occid": 5, "sample": {"taxonid": 1004, "taxonname": "Ambrosia-type", "value": 0.1, "sampleunits": "percent"}, "age": {"age": 8000, "ageolder": 8500, "ageyounger": 7500}, "site": {"datasetid": 13, "siteid": 103, "sitename": "Plant Lake", "location": "{\"type\":\"Point\",\"coordinates\":[-123,53]}", "datasettype": "pollen", "database": "Pollen"}}
+  ],
+  "message": "fixture"
+}
