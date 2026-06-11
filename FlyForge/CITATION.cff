@@ -4,7 +4,7 @@ version: 1.2.0
 message: "If you use FlyForge in your research, please cite this software and the CARPDM publication for the oligo pool synthesis methodology."
 repository-code: "https://github.com/TylerMurchwordie/FlyForge"
 title: "TackleBox: FlyForge - Comprehensive bait/probe designer for hybridization capture enrichment"
-license: MIT
+license: AGPL-3.0-or-later
 authors:
   - family-names: "Murchie"
     given-names: "Tyler J."

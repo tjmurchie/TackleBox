@@ -559,4 +559,4 @@ MetaMerge was developed with the assistance of Claude (Anthropic) and ChatGPT
 
 ## License
 
-MIT — see `LICENSE`.
+AGPL-3.0-or-later — see `LICENSE`.

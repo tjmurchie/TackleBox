@@ -31,7 +31,7 @@ Oligo pool synthesis approach adapted from:
 
 Author:  Tyler J. Murchie
 Created with assistance from Claude (Anthropic) and ChatGPT 5.4 (OpenAI).
-License: MIT
+License: AGPL-3.0-or-later
 """
 
 import argparse
