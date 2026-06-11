@@ -1,0 +1,78 @@
+scientific_name,plausibility
+# ──────────────────────────────────────────────────────────────────
+# MetaMerge ecological plausibility template
+#
+# This file adds an interpretive layer to MetaMerge heatmaps showing
+# how plausible each taxon's detection is given the study region.
+# It is OPTIONAL — heatmaps render normally without it.
+#
+# How to use
+# ----------
+# 1. Copy this file and rename it for your project
+#    (e.g. eastern_ontario_plausibility.csv)
+# 2. Add rows for taxa you want to annotate.
+#    Taxa absent from this file are shown without a plausibility symbol.
+# 3. Pass the file to MetaMerge when rendering:
+#
+#    metamerge report \
+#        --input-dir results/report_inputs \
+#        --outdir    results/reports_plaus \
+#        --plausibility eastern_ontario_plausibility.csv
+#
+#    Or at run time (applies to --render-graphs):
+#
+#    metamerge run ... --render-graphs \
+#        --plausibility eastern_ontario_plausibility.csv
+#
+# Plausibility values
+# -------------------
+# very_likely          — Taxon is well-documented at / near the site;
+#                        detection is expected and credible.
+#                        Symbol: ● filled circle (green)
+#
+# plausible            — Taxon is ecologically possible at the site
+#                        (introduced species, rare visitors, historic records)
+#                        but not documented at the site itself.
+#                        Symbol: ◆ filled diamond (blue)
+#
+# unlikely             — Taxon is geographically or ecologically improbable
+#                        at the site; detection requires extra scrutiny.
+#                        Symbol: △ open triangle (orange)
+#
+# likely_false_positive — Taxon is outside the known range entirely
+#                        (wrong continent / biome) or is a common BLAST
+#                        misassignment artefact. Treat as a false positive
+#                        unless extraordinary evidence supports it.
+#                        Symbol: ⊗ circle-X (red)
+#
+# Matching rules
+# --------------
+# Matching is by exact scientific_name string (case-sensitive).
+# You can annotate at any rank — species, genus, family, etc.
+# A genus entry does NOT automatically apply to child species;
+# add explicit rows for any ranks you want annotated.
+#
+# Tips for large datasets
+# -----------------------
+# For large MEGAN outputs (1,000+ taxa), build the plausibility CSV
+# programmatically using taxonomy-based rules that classify by:
+#   - Phylum/class (e.g. Mammalia → region-specific rules)
+#   - Geographic range (GBIF occurrence records)
+#   - Known contamination taxa (skin bacteria → likely_false_positive)
+# Start with manual entries for key interpreted taxa and expand with
+# rules for background coverage. See the Crawford Lake example in
+# the associated publication for one approach.
+#
+# ──────────────────────────────────────────────────────────────────
+# Example entries (delete these and add your own):
+Branta canadensis,very_likely
+Homo sapiens,very_likely
+Zea mays,very_likely
+Pinus,very_likely
+Bos taurus,plausible
+Gallus gallus,plausible
+Sus scrofa,plausible
+Salmo trutta,plausible
+Pan troglodytes,likely_false_positive
+Pongo pygmaeus,likely_false_positive
+Gymnothorax,likely_false_positive

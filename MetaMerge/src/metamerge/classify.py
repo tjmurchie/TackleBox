@@ -477,7 +477,29 @@ def build_merge(
                         float(x.get("N_reads") or 0) >= thresholds["high_confidence_n_reads_min"]
                         for x in lib_dmg
                     )
-                    lib_adna = "Damage-supported (>=100 reads)" if has_ge100 else "Damage-supported"
+                    if has_ge100:
+                        # Only award the top label when the best-supported row also has
+                        # acceptable QC — a "strong caution" flag (e.g. extreme
+                        # multi-mapping) makes the damage estimate unreliable regardless
+                        # of read count.
+                        best_lib = max(
+                            lib_dmg,
+                            key=lambda x: float(x.get("N_reads") or 0),
+                        )
+                        lib_qc, _ = compute_qc_label(
+                            n_reads=best_lib.get("N_reads"),
+                            n_alignments=best_lib.get("N_alignments"),
+                            map_valid=bool(best_lib.get("MAP_valid")),
+                            rho_ac=best_lib.get("rho_Ac"),
+                            thresholds=thresholds,
+                        )
+                        lib_adna = (
+                            "Damage-supported (>=100 reads)"
+                            if lib_qc != "strong caution"
+                            else "Damage-supported"
+                        )
+                    else:
+                        lib_adna = "Damage-supported"
                 elif holi_lib in lineage_support_holi_libs:
                     lib_adna = "Lineage-supported"
                 else:

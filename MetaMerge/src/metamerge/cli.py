@@ -501,6 +501,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--render-graphs", action="store_true", help="Render heatmaps and stacked-bar PDFs after writing report_inputs. Requires Rscript on PATH.")
     run_cmd.add_argument("--render-heatmaps", dest="render_graphs", action="store_true", help=argparse.SUPPRESS)
     run_cmd.add_argument(
+        "--plausibility",
+        metavar="CSV",
+        help=(
+            "Path to an ecological plausibility CSV (columns: scientific_name, plausibility). "
+            "Adds a narrow symbol column between the Scientific Name and Common Name columns on "
+            "every heatmap page, showing the regional ecological plausibility of each taxon. "
+            "Accepted plausibility values: very_likely, plausible, unlikely, likely_false_positive. "
+            "Taxa not present in the CSV are rendered without a symbol. "
+            "Passed directly to --render-graphs / metamerge report when R rendering is enabled. "
+            "See examples/plausibility_template.csv for format."
+        ),
+    )
+    run_cmd.add_argument(
         "--max-rank",
         dest="max_rank_for_reports",
         default=None,
@@ -563,12 +576,30 @@ def build_parser() -> argparse.ArgumentParser:
             "When supplied, only samples listed in this file are plotted, in exactly the order given."
         ),
     )
+    report_cmd.add_argument(
+        "--plausibility",
+        metavar="CSV",
+        help=(
+            "Path to an ecological plausibility CSV (columns: scientific_name, plausibility). "
+            "Adds a narrow symbol column between the Scientific Name and Common Name columns on "
+            "every heatmap page, showing the regional ecological plausibility of each taxon. "
+            "Accepted plausibility values: very_likely, plausible, unlikely, likely_false_positive. "
+            "Taxa not in the CSV are shown without a symbol. "
+            "All four plausibility symbols always appear in the legend on every page. "
+            "See examples/plausibility_template.csv for the required format."
+        ),
+    )
     return parser
 
 
 # ─── Sub-command implementations ──────────────────────────────────────────────
 
-def run_heatmap_script(input_dir: Path, outdir: Path, sample_order: str | None = None) -> None:
+def run_heatmap_script(
+    input_dir: Path,
+    outdir: Path,
+    sample_order: str | None = None,
+    plausibility: str | None = None,
+) -> None:
     """Run the bundled R graph script if Rscript is available on PATH."""
     rscript = shutil.which("Rscript")
     if not rscript:
@@ -585,6 +616,8 @@ def run_heatmap_script(input_dir: Path, outdir: Path, sample_order: str | None =
     cmd = [rscript, str(script_path), "--input-dir", str(input_dir), "--outdir", str(outdir)]
     if sample_order:
         cmd += ["--sample-order", str(sample_order)]
+    if plausibility:
+        cmd += ["--plausibility", str(plausibility)]
     print("Running graph renderer:", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -910,7 +943,11 @@ def command_run(args) -> None:
 
     if getattr(args, "render_graphs", False):
         try:
-            run_heatmap_script(outdir / "report_inputs", outdir / "reports")
+            run_heatmap_script(
+                outdir / "report_inputs",
+                outdir / "reports",
+                plausibility=getattr(args, "plausibility", None),
+            )
         except subprocess.CalledProcessError:
             print(textwrap.dedent(f"""
 
@@ -937,8 +974,14 @@ def command_report(args) -> None:
     input_dir    = Path(args.input_dir)
     outdir       = Path(args.outdir)
     sample_order = getattr(args, "sample_order", None)
+    plausibility = getattr(args, "plausibility", None)
     outdir.mkdir(parents=True, exist_ok=True)
-    run_heatmap_script(input_dir=input_dir, outdir=outdir, sample_order=sample_order)
+    run_heatmap_script(
+        input_dir=input_dir,
+        outdir=outdir,
+        sample_order=sample_order,
+        plausibility=plausibility,
+    )
 
 
 def main() -> None:

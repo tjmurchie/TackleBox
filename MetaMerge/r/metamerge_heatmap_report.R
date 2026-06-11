@@ -4,7 +4,7 @@
 
 suppressPackageStartupMessages({
   pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "patchwork",
-            "stringr", "forcats", "scales", "tibble")
+            "stringr", "forcats", "scales", "tibble", "ggtext")
   to_install <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(to_install) > 0) {
     message("Installing missing packages: ", paste(to_install, collapse = ", "))
@@ -23,9 +23,17 @@ get_arg <- function(flag, default = NULL) {
 input_dir   <- get_arg("--input-dir")
 out_dir     <- get_arg("--outdir", "metamerge_reports")
 top_n       <- as.integer(get_arg("--top-n", "0"))
-bar_top_n   <- as.integer(get_arg("--bar-top-n", "20"))
+bar_top_n   <- as.integer(get_arg("--bar-top-n", "40"))
 page_rows   <- as.integer(get_arg("--page-rows", "28"))
 order_file  <- get_arg("--sample-order")
+plaus_file  <- get_arg("--plausibility")
+
+plausibility_tbl <- NULL
+if (!is.null(plaus_file) && file.exists(plaus_file)) {
+  plausibility_tbl <- readr::read_csv(plaus_file, show_col_types = FALSE) %>%
+    dplyr::select(scientific_name, plausibility)
+  message("Plausibility table loaded: ", nrow(plausibility_tbl), " taxa")
+}
 
 if (is.null(input_dir)) {
   stop("Usage: Rscript metamerge_heatmap_report.R --input-dir path/to/report_inputs --outdir path/to/reports [--top-n 0] [--bar-top-n 20] [--page-rows 28] [--sample-order sample_order.csv]")
@@ -102,6 +110,84 @@ lib_shape_map <- c(
   "Blank-associated"      = "\u2715",  # ✕ multiplication X     (control/blank)
   "Environmental-control" = "\u25CB"   # ○ open circle          (env. sample)
 )
+
+# ---------------------------------------------------------------------------
+# Ecological plausibility (supplied via --plausibility CSV)
+# ---------------------------------------------------------------------------
+# pch codes: 16=filled circle, 18=filled diamond, 2=open triangle up, 13=circle-X.
+# Chosen to conceptually parallel aDNA support (more filled = more likely) while remaining
+# visually distinct: open △ (pch=2) differs from filled ▲ (Weak support); ⊗ (pch=13) differs from ✕ (Blank-associated).
+plaus_cat_levels <- c("Very likely present", "Plausible", "Unlikely", "Likely false positive")
+plaus_cat_shapes <- stats::setNames(c(16L, 18L, 2L, 13L),                         plaus_cat_levels)
+plaus_cat_colors <- stats::setNames(c("#2ca02c", "#1f77b4", "#e6a500", "#CC0000"), plaus_cat_levels)
+
+add_plausibility <- function(label_df) {
+  if (is.null(plausibility_tbl)) return(label_df)
+  label_df %>%
+    dplyr::left_join(
+      plausibility_tbl %>% dplyr::mutate(
+        plaus_cat = dplyr::case_when(
+          plausibility == "very_likely"           ~ "Very likely present",
+          plausibility == "plausible"             ~ "Plausible",
+          plausibility == "unlikely"              ~ "Unlikely",
+          plausibility == "likely_false_positive" ~ "Likely false positive",
+          TRUE ~ NA_character_
+        )
+      ) %>% dplyr::select(scientific_name, plaus_cat),
+      by = "scientific_name"
+    ) %>%
+    dplyr::mutate(plaus_cat = factor(plaus_cat, levels = plaus_cat_levels))
+}
+
+make_plaus_panel <- function(label_df, boundaries, shared_y, base_theme) {
+  if (is.null(plausibility_tbl) || !"plaus_cat" %in% names(label_df)) return(NULL)
+
+  # Mirror the aDNA support legend approach exactly:
+  #   real points  → colour via identity column, show.legend = FALSE
+  #   legend dummy → shape only (no colour in aes), show.legend = TRUE
+  #   colour forced via override.aes on the single shape guide
+  # This avoids ggplot2 4.x merged-colour+shape guide deduplication which can
+  # silently drop plausibility levels absent from the current page's data.
+  label_plot <- label_df %>%
+    dplyr::mutate(plaus_color = dplyr::coalesce(
+      unname(plaus_cat_colors[as.character(plaus_cat)]), NA_character_
+    ))
+
+  # One row per plausibility level — shape only, alpha=0, show.legend=TRUE.
+  # Same anchor pattern as the aDNA support legend_df.
+  plaus_legend_df <- data.frame(
+    taxon_key = rep(label_df$taxon_key[[1]], 4),
+    x         = rep(0, 4),
+    plaus_cat = factor(plaus_cat_levels, levels = plaus_cat_levels)
+  )
+
+  ggplot(label_plot, aes(x = 0, y = taxon_key)) +
+    geom_hline(data = boundaries, aes(yintercept = yint),
+               inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
+    geom_point(aes(shape = plaus_cat, colour = plaus_color),
+               size = 2.5, na.rm = TRUE, show.legend = FALSE) +
+    geom_point(data = plaus_legend_df,
+               aes(x = x, y = taxon_key, shape = plaus_cat),
+               inherit.aes = FALSE, alpha = 0, size = 3.0, show.legend = TRUE) +
+    scale_colour_identity() +
+    scale_shape_manual(
+      values = plaus_cat_shapes, breaks = plaus_cat_levels,
+      limits = plaus_cat_levels, drop = FALSE,
+      name   = "Ecological Plausibility\n(E. Ontario ~43.5°N)"
+    ) +
+    guides(
+      shape = guide_legend(order = 3, override.aes = list(
+        alpha  = 1,
+        size   = 3,
+        colour = unname(plaus_cat_colors)
+      ))
+    ) +
+    shared_y +
+    coord_cartesian(xlim = c(-0.1, 0.1), clip = "off") +
+    labs(title = " ", subtitle = " ") +
+    base_theme +
+    theme(legend.position = "right")
+}
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -439,6 +525,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         display_group_label  = ifelse(duplicated(display_group), "", display_group)
       )
 
+    label_df <- add_plausibility(label_df)
     y_levels <- label_df$taxon_key
 
     page_dat <- tidyr::expand_grid(plot_sample_id = x_levels, taxon_key = y_levels) %>%
@@ -460,10 +547,14 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         # Explicit factor with ALL 9 levels prevents ggplot2 from silently
         # dropping unused bins from the legend even with drop=FALSE.
         count_bin  = factor(bin_counts(count), levels = count_labels),
-        count_text = ifelse(count > 0, scales::comma(count), ""),
+        count_text = ifelse(count > 0, scales::comma(round(count, 1)), ""),
         count_text_color         = vapply(as.character(count_bin), label_contrast_color,  character(1)),
         library_support_display  = map_library_support(raw_library_adna_support),
-        symbol_color             = vapply(as.character(count_bin), symbol_contrast_color, character(1))
+        symbol_color             = ifelse(
+          map_library_support(raw_library_adna_support) == "Blank-associated",
+          "#CC0000",   # red for blank-associated — makes contamination signal visible
+          vapply(as.character(count_bin), symbol_contrast_color, character(1))
+        )
       ) %>%
       left_join(label_df %>% select(taxon_key, row_id), by = "taxon_key") %>%
       mutate(
@@ -562,6 +653,8 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       labs(title = " ", subtitle = "Common Name") +
       label_theme
 
+    plaus_panel <- make_plaus_panel(label_df, boundaries, shared_y, label_theme)
+
     legend_df <- tibble::tibble(
       plot_sample_id          = factor(x_levels[1], levels = x_levels),
       taxon_key               = factor(rev(y_levels)[1], levels = rev(y_levels)),
@@ -611,7 +704,8 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       scale_colour_identity() +
       guides(
         fill   = guide_legend(order = 1, override.aes = list(alpha = 1, size = 4, shape = NA, colour = NA)),
-        shape  = guide_legend(order = 2, override.aes = list(alpha = 1, colour = "black", size = 2.8)),
+        shape  = guide_legend(order = 2, override.aes = list(alpha = 1, size = 2.8,
+                             colour = c("#000000","#000000","#000000","#000000","#000000","#CC0000","#000000"))),
         colour = "none"
       ) +
       shared_y +
@@ -644,12 +738,19 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         plot.margin   = margin(5.5, 5.5, 5.5, 2)
       )
 
-    plots[[idx]] <- group_panel + sci_panel + common_panel + heat_panel +
-      patchwork::plot_layout(widths = c(group_width, sci_width, common_width, heat_width))
+    if (!is.null(plaus_panel)) {
+      plots[[idx]] <- group_panel + sci_panel + plaus_panel + common_panel + heat_panel +
+        patchwork::plot_layout(widths  = c(group_width, sci_width, 0.12, common_width, heat_width),
+                               guides  = "collect")
+    } else {
+      plots[[idx]] <- group_panel + sci_panel + common_panel + heat_panel +
+        patchwork::plot_layout(widths = c(group_width, sci_width, common_width, heat_width))
+    }
     idx <- idx + 1
   }
 
-  width  <- max(5.5, group_width + sci_width + common_width + heat_width + 2.8)
+  plaus_w <- if (!is.null(plausibility_tbl)) 0.12 else 0.0
+  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 2.8)
   height <- max(4.0, 1.4 + max_rows * 0.16)
   save_plot_pages(plots, out_file, width = width, height = height)
 }
@@ -676,7 +777,14 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     ) %>%
     ungroup()
 
+  # Meaningful ranks for stacked bars: exclude uninformative high-rank nodes
+  # (clades, kingdoms, phyla) that aggregate reads from many organisms.
+  bar_meaningful_ranks <- c("species", "genus", "family", "subfamily",
+                            "tribe", "subtribe", "order", "suborder",
+                            "superfamily", "infraorder")
+
   taxa <- dat %>%
+    filter(tolower(as.character(tax_rank)) %in% bar_meaningful_ranks) %>%
     group_by(scientific_name, display_group) %>%
     summarise(
       support_priority = min(support_priority, na.rm = TRUE),
@@ -741,13 +849,17 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     names(cols) <- grp_taxa
     fill_map   <- c(fill_map, cols)
     taxa_order <- c(taxa_order, grp_taxa)
-    # Only add a group header when the group name is NOT itself one of the plotted
-    # taxa — avoids duplicate factor levels (e.g. "Bovidae" classified at family rank).
-    if (grp %in% grp_taxa) {
+    # Always add a bold group header when the group has >1 taxon.
+    # When the group name IS itself one of the plotted taxa (e.g. "Bovidae"
+    # classified at family rank), the header uses a bold HTML label that maps
+    # to the same fill key as the transparent header entries.
+    if (length(grp_taxa) == 1 && grp %in% grp_taxa) {
+      # Single-taxon group whose name is the taxon itself: no extra header needed.
       legend_entries <- c(legend_entries, grp_taxa)
     } else {
-      header_labels  <- c(header_labels, grp)
-      legend_entries <- c(legend_entries, grp, grp_taxa)
+      hdr_key <- paste0("__hdr__", grp)   # unique key not in taxa names
+      header_labels  <- c(header_labels,  stats::setNames(grp, hdr_key))
+      legend_entries <- c(legend_entries, hdr_key, grp_taxa)
     }
     # Add a small blank spacer between groups (not after the last group).
     if (i < length(grp_levels)) {
@@ -757,14 +869,25 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     }
   }
 
-  # Transparent fill for group headers and spacers: only text shows in the legend,
-  # no colour square.  Both are absent from bar_dat so they never appear in the bars;
-  # drop=FALSE in scale_fill_manual forces them into the legend regardless.
+  # Transparent fill for group headers and spacers: only text shows in the legend.
+  # header_labels is a named vector: name = __hdr__GroupName, value = display label.
+  # Build bold HTML labels for headers (rendered via ggtext::element_markdown).
+  hdr_bold_labels <- if (length(header_labels) > 0)
+    stats::setNames(paste0("<b>", header_labels, "</b>"), names(header_labels))
+  else
+    character(0)
+
   fill_map_full <- c(
     fill_map,
-    stats::setNames(rep("transparent", length(header_labels)), header_labels),
+    stats::setNames(rep("transparent", length(header_labels)), names(header_labels)),
     stats::setNames(rep("transparent", length(spacer_labels)),  spacer_labels)
   )
+
+  # Legend label map: replace __hdr__X keys with bold display names.
+  legend_label_map <- stats::setNames(legend_entries, legend_entries)
+  for (k in names(hdr_bold_labels)) legend_label_map[[k]] <- hdr_bold_labels[[k]]
+  for (sp in spacer_labels) legend_label_map[[sp]] <- sp
+
   bar_dat$scientific_name <- factor(bar_dat$scientific_name, levels = taxa_order)
   bar_dat$plot_sample_id  <- factor(bar_dat$plot_sample_id,  levels = lib_order)
 
@@ -776,14 +899,15 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
       legend.box.background = element_rect(colour = "grey40", fill = "white", linewidth = 0.5),
       legend.box.margin     = margin(4, 4, 4, 4),
       legend.key            = element_blank(),
+      legend.text           = ggtext::element_markdown(size = 8),
       plot.title            = element_text(face = "plain", size = 10)
     )
 
   p_count <- ggplot(bar_dat, aes(x = plot_sample_id, y = count, fill = scientific_name)) +
     geom_col(width = 0.88, colour = "grey25", linewidth = 0.15) +
     scale_fill_manual(values = fill_map_full, breaks = legend_entries,
-                      limits = legend_entries, drop = FALSE,
-                      na.value = "#aaaaaa", name = "Taxon") +
+                      limits = legend_entries, labels = legend_label_map,
+                      drop = FALSE, na.value = "#aaaaaa", name = "Taxon") +
     scale_x_discrete(labels = x_labels, drop = FALSE) +
     labs(title = paste0(subset_name, " — MEGAN counts"),
          x = NULL, y = "MEGAN count of unique reads") +
@@ -792,8 +916,8 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
   p_prop <- ggplot(bar_dat, aes(x = plot_sample_id, y = prop, fill = scientific_name)) +
     geom_col(width = 0.88, colour = "grey25", linewidth = 0.15) +
     scale_fill_manual(values = fill_map_full, breaks = legend_entries,
-                      limits = legend_entries, drop = FALSE,
-                      na.value = "#aaaaaa", name = "Taxon") +
+                      limits = legend_entries, labels = legend_label_map,
+                      drop = FALSE, na.value = "#aaaaaa", name = "Taxon") +
     scale_x_discrete(labels = x_labels, drop = FALSE) +
     scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
     labs(title = paste0(subset_name, " — proportions"),
@@ -909,6 +1033,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
         display_group_label  = ifelse(duplicated(display_group), "", display_group)
       )
 
+    label_df <- add_plausibility(label_df)
     y_levels <- label_df$taxon_key
 
     page_dat <- tidyr::expand_grid(plot_sample_id = x_levels, taxon_key = y_levels) %>%
@@ -1012,6 +1137,8 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
       labs(title = " ", subtitle = "Common Name") +
       label_theme
 
+    plaus_panel <- make_plaus_panel(label_df, boundaries, shared_y, label_theme)
+
     heat_panel <- ggplot(page_dat, aes(x = plot_sample_id, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
@@ -1060,12 +1187,19 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
         plot.margin   = margin(5.5, 5.5, 5.5, 2)
       )
 
-    plots[[idx]] <- group_panel + sci_panel + common_panel + heat_panel +
-      patchwork::plot_layout(widths = c(group_width, sci_width, common_width, heat_width))
+    if (!is.null(plaus_panel)) {
+      plots[[idx]] <- group_panel + sci_panel + plaus_panel + common_panel + heat_panel +
+        patchwork::plot_layout(widths  = c(group_width, sci_width, 0.12, common_width, heat_width),
+                               guides  = "collect")
+    } else {
+      plots[[idx]] <- group_panel + sci_panel + common_panel + heat_panel +
+        patchwork::plot_layout(widths = c(group_width, sci_width, common_width, heat_width))
+    }
     idx <- idx + 1
   }
 
-  width  <- max(5.5, group_width + sci_width + common_width + heat_width + 2.8)
+  plaus_w <- if (!is.null(plausibility_tbl)) 0.12 else 0.0
+  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 2.8)
   height <- max(4.0, 1.4 + max_rows * 0.16)
   save_plot_pages(plots, out_file, width = width, height = height)
 }

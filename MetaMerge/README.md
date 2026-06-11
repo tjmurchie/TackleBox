@@ -1,4 +1,10 @@
-# MetaMerge v1.1.0
+# TackleBox: MetaMerge
+
+<p align="center">
+  <img src="../assets/MetaMerge.png" alt="TackleBox: MetaMerge header" width="700">
+</p>
+
+# MetaMerge v1.2.0
 
 **MetaMerge** is a command-line tool for ensemble ancient-DNA classification.
 It merges a conservative **BLASTn → MEGAN7** taxon count matrix with
@@ -90,9 +96,9 @@ See `scripts/make_metamerge_linker.py --help` and
 
 ```bash
 metamerge check \
-    --counts megan_counts.tsv \
-    --holi   metaDMG_output.csv \
-    --meta   library_linker.csv
+    --megan-counts megan_counts.tsv \
+    --holi         metaDMG_output.csv \
+    --linker       library_linker.csv
 ```
 
 Prints a pre-run summary: how many libraries match, how many taxa are present
@@ -102,18 +108,19 @@ in MEGAN vs Holi, and any mismatches that would cause silent data loss.
 
 ```bash
 metamerge run \
-    --counts megan_counts.tsv \
-    --holi   metaDMG_output.csv \
-    --meta   library_linker.csv \
-    --config config/defaults.yaml \
-    --outdir results/
+    --megan-counts megan_counts.tsv \
+    --holi         metaDMG_output.csv \
+    --linker       library_linker.csv \
+    --config       config/defaults.yaml \
+    --outdir       results/
 ```
 
 Optional flags:
 - `--online-common-names` — query NCBI → GBIF → iNaturalist for English common names
 - `--max-rank family` — most inclusive (broadest) rank in heatmap tables (`species`,
   `genus`, `family` *(default)*, `order`, `class`, …)
-- `--render-heatmaps` — render PDFs immediately after the merge
+- `--render-graphs` — render PDFs immediately after the merge (requires R)
+- `--plausibility path/to/plausibility.csv` — add ecological plausibility symbols to heatmaps
 
 Outputs:
 - `results/<prefix>_merged_support.xlsx` — publication-ready Excel workbook
@@ -139,6 +146,37 @@ After the run completes, a `sample_order.csv` file is written to
 `results/report_inputs/sample_order.csv`.  Edit this file and pass it to
 `metamerge report --sample-order` to customise the layout of every plot
 (see [Customising plot layout](#customising-plot-layout) below).
+
+### Step 4 — (Optional) Add ecological plausibility annotations
+
+The `--plausibility` flag overlays an interpretive symbol column on every
+heatmap page showing how plausible each taxon's detection is for your study
+region.  This layer is entirely separate from the DNA evidence categories and
+is never required — it is an additional scientific filter you apply after
+examining the DNA evidence.
+
+```bash
+metamerge report \
+    --input-dir results/report_inputs \
+    --outdir    results/reports_plaus \
+    --plausibility my_region_plausibility.csv
+```
+
+Or pass it at run time so it is applied automatically when `--render-graphs`
+fires:
+
+```bash
+metamerge run \
+    --megan-counts megan_counts.tsv \
+    --holi         metaDMG_output.csv \
+    --linker       library_linker.csv \
+    --outdir       results/ \
+    --render-graphs \
+    --plausibility my_region_plausibility.csv
+```
+
+See [Ecological plausibility layer](#ecological-plausibility-layer) below for
+the CSV format, accepted values, and symbol legend.
 
 ### Step 4 — (Optional) Customise plot layout
 
@@ -255,6 +293,68 @@ See `examples/coprolite_demo_metadata.csv` for a worked example.
 
 ---
 
+## Ecological plausibility layer
+
+MetaMerge classifies DNA evidence only — it cannot know whether a taxon is
+ecologically plausible at your study site.  The `--plausibility` flag lets you
+add a separate interpretive layer as a narrow symbol column that appears on
+every heatmap page, between the Scientific Name and Common Name columns.
+
+### Plausibility CSV format
+
+The file must have exactly two columns (a header row is required):
+
+```
+scientific_name,plausibility
+Branta canadensis,very_likely
+Bos taurus,plausible
+Sus scrofa,plausible
+Pan troglodytes,likely_false_positive
+```
+
+| Value | Meaning | Symbol |
+|---|---|---|
+| `very_likely` | Well-documented at / near the site; expected in the record | ● filled circle (green) |
+| `plausible` | Ecologically possible (introduced spp., rare visitors, historic records) | ◆ filled diamond (blue) |
+| `unlikely` | Geographically or ecologically improbable; extra scrutiny required | △ open triangle (orange) |
+| `likely_false_positive` | Outside known range entirely, or a known BLAST misassignment artefact | ⊗ circle-X (red) |
+
+Taxa absent from the CSV are rendered without a symbol.  All four symbols
+always appear in the legend on every page (even when a page contains only
+a subset of plausibility categories).
+
+Matching is by exact `scientific_name` string.  You can annotate at any
+taxonomic rank — species, genus, family, etc.  A genus entry does **not**
+automatically apply to child species; add explicit rows for any rank you want
+annotated.
+
+### Symbol design rationale
+
+Plausibility symbols are deliberately distinct from aDNA support symbols so
+the two evidence types are never confused:
+
+| aDNA support | Plausibility |
+|---|---|
+| ⬢ Very high confidence | ● Very likely present |
+| ■ Supported | ◆ Plausible |
+| ▲ Weak support (filled △) | △ Unlikely (open △) |
+| ✕ Blank-associated | ⊗ Likely false positive (circle-X) |
+
+### Building a plausibility CSV for large datasets
+
+For MEGAN outputs with 1,000+ taxa, build the CSV programmatically using
+taxonomy-based rules:
+
+1. Start with manual entries for all key interpreted taxa.
+2. Apply regional rules by clade (e.g. all Mammalia → classify by range).
+3. Use GBIF occurrence records to fill remaining taxa.
+4. Manual entries always override rules.
+
+See `examples/plausibility_template.csv` for the file format with
+annotated comments explaining each option.
+
+---
+
 ## Configuration
 
 MetaMerge ships with sensible defaults in `config/defaults.yaml`.  All
@@ -351,18 +451,15 @@ MetaMerge/
 ├── README.md
 ├── pyproject.toml
 ├── config/
-│   └── defaults.yaml           # Default thresholds and settings
-├── docs/
-│   ├── workflow.md             # Detailed workflow description
-│   └── metadata_linker.md     # Linker format and generation guide
+│   └── defaults.yaml                  # Default thresholds and settings
 ├── examples/
-│   ├── coprolite_demo_metadata.csv   # Example library linker
-│   ├── common_names_template.csv     # Template for custom common names
-│   └── example_config.yaml           # Example project config
+│   ├── plausibility_template.csv      # Template for ecological plausibility CSV
+│   └── example_config.yaml            # Example project config
 ├── r/
-│   └── metamerge_heatmap_report.R    # R heatmap rendering script
+│   └── metamerge_heatmap_report.R     # R heatmap rendering script
+│                                       #   --plausibility CSV supported
 ├── scripts/
-│   └── make_metamerge_linker.py      # Linker generator (project setup)
+│   └── make_metamerge_linker.py       # Linker generator (project setup)
 ├── src/
 │   └── metamerge/
 │       ├── __init__.py
@@ -420,7 +517,11 @@ All 14 tests should pass.
 7. Review the output, warnings, and blank-association flags.
 8. Edit `report_inputs/sample_order.csv` to customise sample ordering and
    group assignments, then re-render with `metamerge report --sample-order`.
-9. Apply ecology/macrofossil interpretation as a separate scientific layer.
+9. *(Optional)* Build a regional plausibility CSV using
+   `examples/plausibility_template.csv` as a starting point.  Re-render with
+   `metamerge report --plausibility your_region_plausibility.csv` to overlay
+   ecological credibility symbols on every heatmap page.
+10. Apply ecology/macrofossil interpretation as a separate scientific layer.
 
 ---
 
