@@ -209,10 +209,11 @@ save_plot_pages <- function(plot_list, out_file, width, height) {
 }
 
 pretty_common_name <- function(x) {
+  x <- as.character(x)
   x <- ifelse(is.na(x) | x == "", " ", x)
   x <- stringr::str_squish(x)
   x <- ifelse(x == " ", x, stringr::str_to_title(tolower(x)))
-  x
+  as.character(x)
 }
 
 make_taxon_key <- function(scientific_name, tax_rank, display_group) {
@@ -290,7 +291,11 @@ resolve_x_order <- function(grp_dat, subset_name) {
         is_env = dplyr::if_else(is.na(is_environmental_control), FALSE,
                                 as.logical(is_environmental_control))
       ) %>%
-      dplyr::arrange(is_neg, is_pos, is_env, plot_sample_id, plot_library_label)
+      dplyr::mutate(
+        depth_num = suppressWarnings(as.numeric(stringr::str_extract(as.character(plot_sample_id), "[0-9]+$")))
+      ) %>%
+      dplyr::arrange(is_neg, is_pos, is_env, depth_num, plot_sample_id, plot_library_label) %>%
+      dplyr::select(-depth_num)
     x_levels <- as.character(level_df$plot_sample_id)
   }
 
@@ -307,6 +312,14 @@ resolve_x_order <- function(grp_dat, subset_name) {
 bin_counts <- function(x) {
   factor(cut(x, breaks = count_breaks, labels = count_labels,
              include.lowest = TRUE, right = FALSE), levels = count_labels)
+}
+
+fmt_count_label <- function(x) {
+  dplyr::case_when(
+    x >= 10000 ~ paste0(round(x / 1000), "k"),
+    x >= 1000  ~ paste0(round(x / 1000, 1), "k"),
+    TRUE       ~ as.character(round(x))
+  )
 }
 
 label_contrast_color  <- function(cb) { if (!is.na(cb) && as.character(cb) %in% dark_bins) "white" else "black" }
@@ -476,6 +489,23 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
 
   if (length(x_levels) == 0) return(invisible(NULL))
 
+  # Append negative-control columns on the right of the main samples.
+  ctrl_x_levels <- character(0)
+  n_main_cols   <- length(x_levels)
+  if (!subset_name %in% c("all_libraries", "negative_controls") &&
+      "negative_controls" %in% unique(dat$plot_group)) {
+    ctrl_samples <- dat %>%
+      dplyr::filter(plot_group == "negative_controls") %>%
+      dplyr::distinct(plot_sample_id, plot_library_label) %>%
+      dplyr::arrange(plot_sample_id)
+    ctrl_x_levels  <- as.character(ctrl_samples$plot_sample_id)
+    ctrl_label_map <- stats::setNames(
+      dplyr::coalesce(as.character(ctrl_samples$plot_library_label), ctrl_x_levels),
+      ctrl_x_levels)
+    x_levels    <- c(x_levels, ctrl_x_levels)
+    x_label_map <- c(x_label_map, ctrl_label_map)
+  }
+
   # Compute max page size before loop so shared_y can pad shorter pages to
   # match — this keeps the physical tile height identical on every page.
   max_rows <- max(vapply(pages, length, numeric(1)))
@@ -528,6 +558,19 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     label_df <- add_plausibility(label_df)
     y_levels <- label_df$taxon_key
 
+    # Append negative-control rows so their tiles appear in page_dat.
+    if (length(ctrl_x_levels) > 0) {
+      ctrl_raw <- dat %>%
+        dplyr::filter(plot_group == "negative_controls", taxon_key %in% page_taxa) %>%
+        dplyr::mutate(
+          common_name = pretty_common_name(common_name),
+          count       = as.numeric(count),
+          taxon_key   = make_taxon_key(scientific_name, tax_rank, display_group)
+        ) %>%
+        dplyr::filter(!is.na(count), count > 0)
+      raw_page_dat <- dplyr::bind_rows(raw_page_dat, ctrl_raw)
+    }
+
     page_dat <- tidyr::expand_grid(plot_sample_id = x_levels, taxon_key = y_levels) %>%
       left_join(raw_page_dat, by = c("plot_sample_id", "taxon_key"), relationship = "many-to-many") %>%
       group_by(plot_sample_id, taxon_key) %>%
@@ -547,7 +590,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         # Explicit factor with ALL 9 levels prevents ggplot2 from silently
         # dropping unused bins from the legend even with drop=FALSE.
         count_bin  = factor(bin_counts(count), levels = count_labels),
-        count_text = ifelse(count > 0, scales::comma(round(count, 1)), ""),
+        count_text = ifelse(count > 0, fmt_count_label(count), ""),
         count_text_color         = vapply(as.character(count_bin), label_contrast_color,  character(1)),
         library_support_display  = map_library_support(raw_library_adna_support),
         symbol_color             = ifelse(
@@ -583,12 +626,12 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     symbol_dat <- page_dat %>% filter(!is.na(library_support_display))
 
     # Per-page column widths — sized to longest text on THIS page only.
-    group_width  <- panel_width(label_df$display_group_label, min_width = 0.35, max_width = 1.8, char_scale = 0.055)
-    sci_width    <- panel_width(label_df$scientific_name,      min_width = 0.65, max_width = 2.8, char_scale = 0.060)
-    common_width <- panel_width(label_df$common_name,          min_width = 0.40, max_width = 2.4, char_scale = 0.053)
+    group_width  <- panel_width(label_df$display_group_label, min_width = 0.38, max_width = 1.8, char_scale = 0.063)
+    sci_width    <- panel_width(label_df$scientific_name,      min_width = 0.66, max_width = 2.0, char_scale = 0.066)
+    common_width <- panel_width(label_df$common_name,          min_width = 0.41, max_width = 1.2, char_scale = 0.052)
     # Heat panel width: proportional to library count; no excessive minimum.
     n_libs       <- length(x_levels)
-    heat_width   <- max(0.65, n_libs * 0.52)
+    heat_width   <- max(0.65, n_libs * 0.15)
 
     # Shared y-scale — identical limits and expand across all panels ensure
     # perfect alignment of the geom_hline group-boundary lines.
@@ -596,7 +639,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     # row height and tiles look consistent across all pages.
     n_page_rows  <- length(page_taxa)
     extra_expand <- max(0, (max_rows - n_page_rows)) / 2
-    shared_y <- scale_y_discrete(limits = rev(y_levels), expand = expansion(add = 0.4 + extra_expand))
+    shared_y <- scale_y_discrete(limits = rev(y_levels), expand = expansion(add = c(0.4, 0.4 + extra_expand * 2)))
 
     # Consistent title line on ALL panels so patchwork aligns data regions.
     # Label panels: blank title + column name as subtitle.
@@ -613,7 +656,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       axis.ticks       = element_blank(),
       axis.title       = element_blank(),
       # Invisible x-axis text: same size/angle as heat panel → equal bottom margin.
-      axis.text.x      = element_text(colour = NA, size = 7, angle = 45, hjust = 1, vjust = 1),
+      axis.text.x      = element_text(colour = NA, size = 7.5, angle = 45, hjust = 1, vjust = 1),
       panel.background = element_rect(fill = "white", colour = NA),
       panel.grid       = element_blank(),
       plot.background  = element_rect(fill = "white", colour = NA),
@@ -629,7 +672,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     group_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = display_group_label), hjust = 0, size = 2.7) +
+      geom_text(aes(label = display_group_label), hjust = 0, size = 2.9) +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Family / Group") +
@@ -638,7 +681,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     sci_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = scientific_name), hjust = 0, size = 2.65, fontface = "italic") +
+      geom_text(aes(label = scientific_name), hjust = 0, size = 2.9, fontface = "italic") +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Scientific Name") +
@@ -647,7 +690,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
     common_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = common_name), hjust = 0, size = 2.55) +
+      geom_text(aes(label = common_name), hjust = 0, size = 2.7) +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Common Name") +
@@ -685,7 +728,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       # Count text labels.
       geom_text(aes(x = plot_sample_id, y = taxon_key,
                     label = count_text, colour = count_text_color),
-                size = 2.1, fontface = "plain", na.rm = TRUE,
+                size = 1.5, fontface = "plain", na.rm = TRUE,
                 inherit.aes = FALSE, show.legend = FALSE) +
       scale_fill_manual(
         values   = count_palette,
@@ -720,23 +763,28 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         panel.grid      = element_blank(),
         axis.text.y     = element_blank(),
         axis.title      = element_blank(),
-        axis.text.x     = element_text(angle = 45, hjust = 1, vjust = 1, size = 7),
+        axis.text.x     = element_text(angle = 45, hjust = 1, vjust = 1, size = 7.5),
         legend.position = "right",
         # Single outer border only — no inner per-section boxes.
         legend.background     = element_blank(),
         legend.box.background = element_rect(colour = "grey40", fill = "white", linewidth = 0.5),
         legend.box.margin     = margin(4, 4, 4, 4),
-        legend.spacing.y      = unit(0.1, "cm"),
+        legend.spacing.y      = unit(0.05, "cm"),
         legend.key            = element_rect(fill = "white", colour = NA),
-        legend.key.height     = unit(0.50, "cm"),
-        legend.key.width      = unit(0.50, "cm"),
-        legend.text           = element_text(size = 7),
-        legend.title          = element_text(size = 7.5, face = "bold"),
+        legend.key.height     = unit(0.38, "cm"),
+        legend.key.width      = unit(0.38, "cm"),
+        legend.text           = element_text(size = 6),
+        legend.title          = element_text(size = 6.5, face = "bold"),
         plot.title    = element_text(face = "plain", size = title_size,    margin = margin(b = 1)),
         plot.subtitle = element_text(face = "bold",  size = subtitle_size, colour = "grey35",
                                      margin = margin(b = 2)),
         plot.margin   = margin(5.5, 5.5, 5.5, 2)
       )
+
+    if (length(ctrl_x_levels) > 0 && n_main_cols > 0) {
+      heat_panel <- heat_panel +
+        geom_vline(xintercept = n_main_cols + 0.5, linewidth = 0.35, colour = "grey20")
+    }
 
     if (!is.null(plaus_panel)) {
       plots[[idx]] <- group_panel + sci_panel + plaus_panel + common_panel + heat_panel +
@@ -750,8 +798,8 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
   }
 
   plaus_w <- if (!is.null(plausibility_tbl)) 0.12 else 0.0
-  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 2.8)
-  height <- max(4.0, 1.4 + max_rows * 0.16)
+  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 3.0)
+  height <- max(5.5, 1.4 + max_rows * 0.16)
   save_plot_pages(plots, out_file, width = width, height = height)
 }
 
@@ -893,7 +941,7 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
 
   bar_theme <- theme_minimal(base_size = 11) +
     theme(
-      axis.text.x           = element_text(angle = 45, hjust = 1, size = 7),
+      axis.text.x           = element_text(angle = 45, hjust = 1, size = 7.5),
       legend.position       = "right",
       legend.background     = element_blank(),
       legend.box.background = element_rect(colour = "grey40", fill = "white", linewidth = 0.5),
@@ -986,6 +1034,22 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
 
   if (length(x_levels) == 0) return(invisible(NULL))
 
+  ctrl_x_levels <- character(0)
+  n_main_cols   <- length(x_levels)
+  if (!subset_name %in% c("all_libraries", "negative_controls") &&
+      "negative_controls" %in% unique(dat$plot_group)) {
+    ctrl_samples <- dat %>%
+      dplyr::filter(plot_group == "negative_controls") %>%
+      dplyr::distinct(plot_sample_id, plot_library_label) %>%
+      dplyr::arrange(plot_sample_id)
+    ctrl_x_levels  <- as.character(ctrl_samples$plot_sample_id)
+    ctrl_label_map <- stats::setNames(
+      dplyr::coalesce(as.character(ctrl_samples$plot_library_label), ctrl_x_levels),
+      ctrl_x_levels)
+    x_levels    <- c(x_levels, ctrl_x_levels)
+    x_label_map <- c(x_label_map, ctrl_label_map)
+  }
+
   max_rows <- max(vapply(pages, length, numeric(1)))
 
   plots <- list()
@@ -1036,6 +1100,18 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
     label_df <- add_plausibility(label_df)
     y_levels <- label_df$taxon_key
 
+    if (length(ctrl_x_levels) > 0) {
+      ctrl_raw <- dat %>%
+        dplyr::filter(plot_group == "negative_controls", taxon_key %in% page_taxa) %>%
+        dplyr::mutate(
+          common_name = pretty_common_name(common_name),
+          count       = as.numeric(count),
+          plot_damage = as.numeric(plot_damage),
+          taxon_key   = make_taxon_key(scientific_name, tax_rank, display_group)
+        )
+      raw_page_dat <- dplyr::bind_rows(raw_page_dat, ctrl_raw)
+    }
+
     page_dat <- tidyr::expand_grid(plot_sample_id = x_levels, taxon_key = y_levels) %>%
       left_join(raw_page_dat, by = c("plot_sample_id", "taxon_key"), relationship = "many-to-many") %>%
       group_by(plot_sample_id, taxon_key) %>%
@@ -1083,11 +1159,11 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
       filter(group_end < n_rows) %>%
       mutate(yint = n_rows - group_end + 0.5)
 
-    group_width  <- panel_width(label_df$display_group_label, min_width = 0.35, max_width = 1.8, char_scale = 0.055)
-    sci_width    <- panel_width(label_df$scientific_name,      min_width = 0.65, max_width = 2.8, char_scale = 0.060)
-    common_width <- panel_width(label_df$common_name,          min_width = 0.40, max_width = 2.4, char_scale = 0.053)
+    group_width  <- panel_width(label_df$display_group_label, min_width = 0.38, max_width = 1.8, char_scale = 0.063)
+    sci_width    <- panel_width(label_df$scientific_name,      min_width = 0.66, max_width = 2.0, char_scale = 0.066)
+    common_width <- panel_width(label_df$common_name,          min_width = 0.41, max_width = 1.2, char_scale = 0.052)
     n_libs       <- length(x_levels)
-    heat_width   <- max(0.65, n_libs * 0.52)
+    heat_width   <- max(0.65, n_libs * 0.15)
 
     n_page_rows  <- length(page_taxa)
     extra_expand <- max(0, (max_rows - n_page_rows)) / 2
@@ -1099,7 +1175,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
       axis.text.y      = element_blank(),
       axis.ticks       = element_blank(),
       axis.title       = element_blank(),
-      axis.text.x      = element_text(colour = NA, size = 7, angle = 45, hjust = 1, vjust = 1),
+      axis.text.x      = element_text(colour = NA, size = 7.5, angle = 45, hjust = 1, vjust = 1),
       panel.background = element_rect(fill = "white", colour = NA),
       panel.grid       = element_blank(),
       plot.background  = element_rect(fill = "white", colour = NA),
@@ -1113,7 +1189,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
     group_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = display_group_label), hjust = 0, size = 2.7) +
+      geom_text(aes(label = display_group_label), hjust = 0, size = 2.9) +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Family / Group") +
@@ -1122,7 +1198,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
     sci_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = scientific_name), hjust = 0, size = 2.65, fontface = "italic") +
+      geom_text(aes(label = scientific_name), hjust = 0, size = 2.9, fontface = "italic") +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Scientific Name") +
@@ -1131,7 +1207,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
     common_panel <- ggplot(label_df, aes(x = 0, y = taxon_key)) +
       geom_hline(data = boundaries, aes(yintercept = yint),
                  inherit.aes = FALSE, linewidth = 0.3, colour = "grey30") +
-      geom_text(aes(label = common_name), hjust = 0, size = 2.55) +
+      geom_text(aes(label = common_name), hjust = 0, size = 2.7) +
       shared_y +
       coord_cartesian(xlim = c(0, 1), clip = "off") +
       labs(title = " ", subtitle = "Common Name") +
@@ -1151,7 +1227,7 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
                 width = 0.96, height = 0.88, na.rm = TRUE) +
       geom_text(aes(x = plot_sample_id, y = taxon_key,
                     label = damage_text, colour = damage_text_color),
-                size = 2.1, fontface = "plain", na.rm = TRUE,
+                size = 1.5, fontface = "plain", na.rm = TRUE,
                 inherit.aes = FALSE, show.legend = FALSE) +
       scale_fill_manual(
         values   = damage_palette,
@@ -1176,16 +1252,27 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
         panel.grid      = element_blank(),
         axis.text.y     = element_blank(),
         axis.title      = element_blank(),
-        axis.text.x     = element_text(angle = 45, hjust = 1, vjust = 1, size = 7),
+        axis.text.x     = element_text(angle = 45, hjust = 1, vjust = 1, size = 7.5),
         legend.position = "right",
         legend.background     = element_blank(),
         legend.box.background = element_rect(colour = "grey40", fill = "white", linewidth = 0.5),
         legend.box.margin     = margin(4, 4, 4, 4),
+        legend.spacing.y      = unit(0.05, "cm"),
+        legend.key            = element_rect(fill = "white", colour = NA),
+        legend.key.height     = unit(0.38, "cm"),
+        legend.key.width      = unit(0.38, "cm"),
+        legend.text           = element_text(size = 6),
+        legend.title          = element_text(size = 6.5, face = "bold"),
         plot.title    = element_text(face = "plain", size = title_size,    margin = margin(b = 1)),
         plot.subtitle = element_text(face = "bold",  size = subtitle_size, colour = "grey35",
                                      margin = margin(b = 2)),
         plot.margin   = margin(5.5, 5.5, 5.5, 2)
       )
+
+    if (length(ctrl_x_levels) > 0 && n_main_cols > 0) {
+      heat_panel <- heat_panel +
+        geom_vline(xintercept = n_main_cols + 0.5, linewidth = 0.35, colour = "grey20")
+    }
 
     if (!is.null(plaus_panel)) {
       plots[[idx]] <- group_panel + sci_panel + plaus_panel + common_panel + heat_panel +
@@ -1199,8 +1286,8 @@ make_damage_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows
   }
 
   plaus_w <- if (!is.null(plausibility_tbl)) 0.12 else 0.0
-  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 2.8)
-  height <- max(4.0, 1.4 + max_rows * 0.16)
+  width  <- max(5.5, group_width + sci_width + common_width + plaus_w + heat_width + 3.0)
+  height <- max(5.5, 1.4 + max_rows * 0.16)
   save_plot_pages(plots, out_file, width = width, height = height)
 }
 
@@ -1221,6 +1308,8 @@ for (f in files) {
 
   # When a sample order file is supplied, reassign plot_group from its column
   # headers and exclude any samples not listed in the file.
+  # Negative controls are preserved even when absent from order_map so they
+  # can be shown as extra columns on the right of the main-sample heatmaps.
   if (!is.null(order_map)) {
     dat <- dat %>%
       dplyr::left_join(
@@ -1231,7 +1320,11 @@ for (f in files) {
         relationship = "many-to-many"
       ) %>%
       dplyr::mutate(
-        plot_group = dplyr::if_else(!is.na(plot_group_new), plot_group_new, NA_character_)
+        plot_group = dplyr::case_when(
+          !is.na(plot_group_new)                                              ~ plot_group_new,
+          !is.na(is_negative_control) & as.logical(is_negative_control)      ~ plot_group,
+          TRUE                                                                ~ NA_character_
+        )
       ) %>%
       dplyr::filter(!is.na(plot_group)) %>%
       dplyr::select(-plot_group_new)
