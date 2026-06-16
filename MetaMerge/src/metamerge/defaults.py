@@ -127,6 +127,9 @@ DEFAULT_CONFIG = {
         "rho_Ac",
         "MAP_valid",
         "tax_path",
+        "mean_L",
+        "std_L",
+        "mean_GC",
     ],
 
     "thresholds": {

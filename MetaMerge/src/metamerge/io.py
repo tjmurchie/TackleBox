@@ -199,7 +199,9 @@ def load_holi(path: str, config: dict) -> pd.DataFrame:
     df["tax_path"]   = df["tax_path"].fillna("").astype(str)
     df["MAP_valid"]  = df["MAP_valid"].fillna(False).astype(bool)
 
-    for col in ["N_reads", "N_alignments", "damage", "significance", "rho_Ac"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["N_reads", "N_alignments", "damage", "significance", "rho_Ac",
+                "mean_L", "std_L", "mean_GC"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     return df

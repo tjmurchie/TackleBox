@@ -215,6 +215,7 @@ def write_workbook(
         "scientific_name", "common_name", "tax_rank", "broad_group",
         "aDNA_support_status", "support_basis_summary",
         "Holi_best_damage", "Holi_best_significance", "Holi_best_N_reads",
+        "Holi_best_mean_L", "Holi_best_std_L", "Holi_best_mean_GC",
         "Holi_best_library",
         "Holi_exact_damage_sig_libraries_n", "Holi_exact_damage_sig_libraries",
         "megan_max_count", "megan_positive_libraries_n",
