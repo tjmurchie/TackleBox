@@ -565,6 +565,27 @@ def build_merge(
                     if pd.notna(best_exact.get("non_CT_GA_damage_frequency_std"))
                     else np.nan
                 ),
+                # Optional columns — present when the holi file contains them.
+                "Holi_best_c": (
+                    float(best_exact["c"])
+                    if pd.notna(best_exact.get("c"))
+                    else np.nan
+                ),
+                "Holi_best_damage_std": (
+                    float(best_exact["damage_std"])
+                    if pd.notna(best_exact.get("damage_std"))
+                    else np.nan
+                ),
+                "Holi_best_MAP_damage": (
+                    float(best_exact["MAP_damage"])
+                    if pd.notna(best_exact.get("MAP_damage"))
+                    else np.nan
+                ),
+                "Holi_best_MAP_significance": (
+                    float(best_exact["MAP_significance"])
+                    if pd.notna(best_exact.get("MAP_significance"))
+                    else np.nan
+                ),
             })
         else:
             record.update({
@@ -585,6 +606,10 @@ def build_merge(
                 "Holi_best_alignments_per_read": np.nan,
                 "Holi_best_non_CT_GA_freq_mean": np.nan,
                 "Holi_best_non_CT_GA_freq_std":  np.nan,
+                "Holi_best_c":                   np.nan,
+                "Holi_best_damage_std":          np.nan,
+                "Holi_best_MAP_damage":          np.nan,
+                "Holi_best_MAP_significance":    np.nan,
             })
 
         # Best blank-library Holi fields.

@@ -64,6 +64,17 @@ def _make_test_data():
                 "Animalia;Chordata;Mammalia;Carnivora;Felidae;Puma",
                 "Animalia;Chordata;Mammalia;Carnivora;Felidae;Puma",
             ],
+            # Required columns added in v1.3
+            "mean_L":        [51.0,       0.0],
+            "std_L":         [0.0,        0.0],
+            "mean_GC":       [0.48,       0.0],
+            "non_CT_GA_damage_frequency_mean": [0.008, 0.0],
+            "non_CT_GA_damage_frequency_std":  [0.005, 0.0],
+            # Optional columns (present in standard metaDMG output)
+            "c":             [0.005,      0.0],
+            "damage_std":    [0.015,      0.0],
+            "MAP_damage":    [0.095,      0.0],
+            "MAP_significance": [2.90,    0.0],
         }
     )
     return cfg, metadata, megan, holi
@@ -111,6 +122,11 @@ def test_smoke_output_columns():
         "aDNA_support_status", "support_basis_summary",
         "megan_max_count", "megan_positive_libraries_n",
         "Holi_best_damage", "Holi_best_significance",
+        "Holi_best_N_reads", "Holi_best_mean_L", "Holi_best_mean_GC",
+        "Holi_best_alignments_per_read", "Holi_best_abs_rho_Ac",
+        "Holi_best_non_CT_GA_freq_mean", "Holi_best_non_CT_GA_freq_std",
+        "Holi_best_c", "Holi_best_damage_std",
+        "Holi_best_MAP_damage", "Holi_best_MAP_significance",
         "count__A", "count__B", "count__BLK",
     ]
     missing = [c for c in required_cols if c not in merged.columns]

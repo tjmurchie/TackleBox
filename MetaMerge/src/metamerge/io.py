@@ -170,26 +170,36 @@ def load_holi(path: str, config: dict) -> pd.DataFrame:
     """Load a Holi/metaDMG table, reading only the columns MetaMerge needs.
 
     Using ``usecols`` makes this fast even for multi-gigabyte metaDMG CSVs.
+    Required columns raise ValueError if absent; optional columns are loaded
+    when present and silently omitted when not.
 
     Args:
         path: Path to the metaDMG/Holi CSV.
-        config: MetaMerge config dict (provides the required column list).
+        config: MetaMerge config dict (provides required and optional column lists).
 
     Returns:
-        DataFrame with exactly the required columns, normalised and typed.
+        DataFrame with required columns (plus any available optional columns),
+        normalised and typed.
 
     Raises:
         ValueError: If any required column is absent from the file.
     """
-    usecols = config["holi_required_columns"]
+    required = config["holi_required_columns"]
+    optional = config.get("holi_optional_columns", [])
+
+    # Probe the file header to determine which optional columns are present.
+    probe = pd.read_csv(path, nrows=0)
+    available_optional = [c for c in optional if c in probe.columns]
+
+    usecols = required + [c for c in available_optional if c not in required]
     df = pd.read_csv(path, usecols=usecols, low_memory=False)
 
-    missing = [c for c in usecols if c not in df.columns]
+    missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(
             "Holi/metaDMG file is missing required columns: "
             + ", ".join(missing)
-            + ".  Required columns: " + ", ".join(usecols)
+            + ".  Required columns: " + ", ".join(required)
         )
 
     df["tax_name"]   = df["tax_name"].map(normalize_name)
@@ -199,8 +209,13 @@ def load_holi(path: str, config: dict) -> pd.DataFrame:
     df["tax_path"]   = df["tax_path"].fillna("").astype(str)
     df["MAP_valid"]  = df["MAP_valid"].fillna(False).astype(bool)
 
-    for col in ["N_reads", "N_alignments", "damage", "significance", "rho_Ac",
-                "mean_L", "std_L", "mean_GC"]:
+    numeric_cols = [
+        "N_reads", "N_alignments", "damage", "significance", "rho_Ac",
+        "mean_L", "std_L", "mean_GC",
+        "c", "damage_std", "MAP_damage", "MAP_significance",
+        "non_CT_GA_damage_frequency_mean", "non_CT_GA_damage_frequency_std",
+    ]
+    for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 

@@ -134,6 +134,16 @@ DEFAULT_CONFIG = {
         "non_CT_GA_damage_frequency_std",
     ],
 
+    # Optional metaDMG columns — loaded when present, silently omitted when not.
+    # These are present in standard metaDMG v2 output but may be absent in
+    # older runs or alternative damage-assessment pipelines.
+    "holi_optional_columns": [
+        "c",                 # background C->T rate at read-internal positions
+        "damage_std",        # standard error of the damage amplitude estimate
+        "MAP_damage",        # MAP posterior damage estimate (cross-check)
+        "MAP_significance",  # MAP posterior significance (cross-check)
+    ],
+
     "thresholds": {
         "damage_min":                       0.01,
         "significance_min":                 2.0,
