@@ -130,6 +130,8 @@ DEFAULT_CONFIG = {
         "mean_L",
         "std_L",
         "mean_GC",
+        "non_CT_GA_damage_frequency_mean",
+        "non_CT_GA_damage_frequency_std",
     ],
 
     "thresholds": {

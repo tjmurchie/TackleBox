@@ -555,6 +555,16 @@ def build_merge(
                 "Holi_best_MAP_valid":               bool(best_exact.get("MAP_valid")),
                 "Holi_best_multimapping_fit_qc":     qc_label,
                 "Holi_best_alignments_per_read":     align_ratio,
+                "Holi_best_non_CT_GA_freq_mean": (
+                    float(best_exact["non_CT_GA_damage_frequency_mean"])
+                    if pd.notna(best_exact.get("non_CT_GA_damage_frequency_mean"))
+                    else np.nan
+                ),
+                "Holi_best_non_CT_GA_freq_std": (
+                    float(best_exact["non_CT_GA_damage_frequency_std"])
+                    if pd.notna(best_exact.get("non_CT_GA_damage_frequency_std"))
+                    else np.nan
+                ),
             })
         else:
             record.update({
@@ -573,6 +583,8 @@ def build_merge(
                 "Holi_best_MAP_valid":           pd.NA,
                 "Holi_best_multimapping_fit_qc": "not-applicable",
                 "Holi_best_alignments_per_read": np.nan,
+                "Holi_best_non_CT_GA_freq_mean": np.nan,
+                "Holi_best_non_CT_GA_freq_std":  np.nan,
             })
 
         # Best blank-library Holi fields.
