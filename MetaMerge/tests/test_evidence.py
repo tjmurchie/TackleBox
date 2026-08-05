@@ -112,11 +112,13 @@ class TestBackwardCompatParity:
             ev = _megan_holi_evidence(
                 lineage_support=lineage_support, blank_associated=blank_associated, **case,
             )
-            new_status, new_basis, score = classify_status_v2(ev, CONFIG)
+            new_status, new_basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
 
             assert new_status == old_status, f"status mismatch for {case}"
             assert new_basis == old_basis, f"basis mismatch for {case}"
             assert 0.0 <= score <= 1.0
+            assert 0 <= agreement_count <= 2
+            assert 0.0 <= agreement_fraction <= 1.0
 
 
 class TestHoliFilletOnly:
@@ -128,17 +130,18 @@ class TestHoliFilletOnly:
             fillet=SourceSignals(present=True, authenticated=True, eco_support=True),
             max_real_count=0,
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
         assert status == "Very high confidence"
         assert "eco" in basis.lower()
         assert score > 0.5
+        assert agreement_count == 2  # holi + fillet, matches sources_present here
 
     def test_damage_supported_no_fillet_authentication_is_supported(self):
         ev = TaxonEvidence(
             holi=SourceSignals(present=True, exact_damage_support=True, exact_damage_support_ge100=False),
             fillet=SourceSignals(present=True, authenticated=False),
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, _, _ = classify_status_v2(ev, CONFIG)
         assert status == "Supported"
 
     def test_no_support_falls_to_weak(self):
@@ -147,9 +150,10 @@ class TestHoliFilletOnly:
             fillet=SourceSignals(present=True, authenticated=False),
             max_real_count=0,
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
         assert status == "Weak support"
         assert score == 0.0
+        assert agreement_count == 0
 
     def test_tentative_from_read_count_alone(self):
         ev = TaxonEvidence(
@@ -157,7 +161,7 @@ class TestHoliFilletOnly:
             fillet=SourceSignals(present=True, authenticated=False),
             max_real_count=6,
         )
-        status, _, _ = classify_status_v2(ev, CONFIG)
+        status, _, _, _, _ = classify_status_v2(ev, CONFIG)
         assert status == "Tentative"
 
 
@@ -168,7 +172,7 @@ class TestMeganFilletOnly:
             fillet=SourceSignals(present=True, exact_damage_support=True, authenticated=True),
             max_real_count=80,
         )
-        status, _, _ = classify_status_v2(ev, CONFIG)
+        status, _, _, _, _ = classify_status_v2(ev, CONFIG)
         assert status == "High confidence"
 
 
@@ -179,25 +183,29 @@ class TestSingleSourceOnly:
         ev = TaxonEvidence(
             fillet=SourceSignals(present=True, authenticated=True, eco_support=True, fos_support=True),
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
         assert status == "Supported"
         assert "fillet only" in basis.lower()
+        assert agreement_count == 1
+        assert agreement_fraction == 1.0  # 1 of 1 present sources agrees
 
     def test_holi_only_exact_damage_caps_at_supported(self):
         ev = TaxonEvidence(holi=SourceSignals(present=True, exact_damage_support=True))
-        status, _, _ = classify_status_v2(ev, CONFIG)
+        status, _, _, _, _ = classify_status_v2(ev, CONFIG)
         assert status == "Supported"
 
     def test_megan_only_strong_counts_caps_at_supported(self):
         ev = TaxonEvidence(megan=SourceSignals(present=True, strong_count_support=True))
-        status, _, _ = classify_status_v2(ev, CONFIG)
+        status, _, _, _, _ = classify_status_v2(ev, CONFIG)
         assert status == "Supported"
 
     def test_no_sources_present_is_weak_support(self):
         ev = TaxonEvidence()
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
         assert status == "Weak support"
         assert score == 0.0
+        assert agreement_count == 0
+        assert agreement_fraction == 0.0
 
 
 class TestThreeSourceCorroboration:
@@ -209,8 +217,10 @@ class TestThreeSourceCorroboration:
             max_real_count=200,
             discordant=False,
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, agreement_count, agreement_fraction = classify_status_v2(ev, CONFIG)
         assert status == "Very high confidence (3-source corroborated)"
+        assert agreement_count == 3
+        assert agreement_fraction == 1.0
         assert score > compute_ensemble_support_score(
             TaxonEvidence(
                 megan=SourceSignals(present=True, strong_count_support=True),
@@ -226,7 +236,7 @@ class TestThreeSourceCorroboration:
             max_real_count=200,
             discordant=True,
         )
-        status, basis, score = classify_status_v2(ev, CONFIG)
+        status, basis, score, _, _ = classify_status_v2(ev, CONFIG)
         assert status != "Very high confidence (3-source corroborated)"
         assert "discordant" in basis.lower() or "disagree" in basis.lower()
 

@@ -476,7 +476,9 @@ def _build_merge_no_megan(
             max_real_count=max_real_count,
             discordant=discordant,
         )
-        status, basis, ensemble_support_score = classify_status_v2(evidence, config)
+        status, basis, ensemble_support_score, methods_agreement_count, methods_agreement_fraction = (
+            classify_status_v2(evidence, config)
+        )
 
         # ── Common name ────────────────────────────────────────────────────────
         common_name, common_name_source = resolve_common_name(
@@ -535,6 +537,8 @@ def _build_merge_no_megan(
                 default=np.nan,
             ),
             "ensemble_support_score":       round(ensemble_support_score, 4),
+            "methods_agreement_count":      methods_agreement_count,
+            "methods_agreement_fraction":   round(methods_agreement_fraction, 4),
             "fillet_authenticated":         fillet_authenticated if have_fillet else pd.NA,
             "fillet_composite_authenticity": (
                 float(best_fillet.get("composite_authenticity"))
@@ -714,6 +718,312 @@ def _build_merge_no_megan(
     return merged, summary
 
 
+def _build_merge_megan_fillet_no_holi(
+    metadata: pd.DataFrame,
+    megan_df: pd.DataFrame,
+    fillet_df: pd.DataFrame,
+    config: dict,
+    common_name_overrides: dict | None,
+    cache_path,
+) -> tuple[pd.DataFrame, dict]:
+    """MEGAN+Fillet merge path with no Holi at all.
+
+    Per Tyler's design (2026-08-05): by default Fillet is the primary
+    counts+support source (its own composite_authenticity/authenticity_tier +
+    eco/pal/fos lines already combine multiple evidence dimensions on their
+    own), MEGAN's own counts are additional corroborating support -- see
+    ``evidence._classify_megan_fillet`` and
+    ``config["source_roles"]["megan_fillet_primary"]`` to swap the roles.
+
+    MEGAN still anchors the taxon universe here (unlike
+    ``_build_merge_no_megan``, which needs a real taxon-union since there is
+    no count matrix to anchor on at all) -- this keeps the well-tested
+    "iterate megan_df's own taxa" structure from the MEGAN-anchored body
+    above, just without any Holi lookups, plus real Fillet exact-matching.
+
+    No lineage support or discordance detection is possible in this path:
+    both require a taxonomy/lineage source with real ``tax_path`` data, which
+    only Holi supplies today (Fillet's own export carries no ``tax_path``).
+    Conservatively left as False/empty rather than guessed at, matching the
+    existing "if we can't confidently tell, don't flag" philosophy.
+    """
+    thresholds = config["thresholds"]
+    common_name_overrides = common_name_overrides or {}
+    common_name_cache = load_common_name_cache(cache_path) if cache_path else {}
+
+    if "fillet_library_name" not in metadata.columns:
+        raise ValueError(
+            "build_merge() was given fillet_df but metadata has no "
+            "fillet_library_name column -- add one to the linker file."
+        )
+    fillet_exact_by_id, fillet_exact_by_name_rank = make_fillet_exact_index(fillet_df)
+    fillet_tax_lookup = build_fillet_taxonomy_lookup(fillet_df)
+
+    is_pos_ctrl = metadata.get("is_positive_control",      pd.Series(False, index=metadata.index))
+    is_env_ctrl = metadata.get("is_environmental_control", pd.Series(False, index=metadata.index))
+    real_meta  = metadata.loc[~metadata["is_negative_control"] & ~is_env_ctrl].copy()
+    blank_meta = metadata.loc[ metadata["is_negative_control"]].copy()
+
+    megan_library_cols = metadata["megan_library_name"].tolist()
+    real_cols          = real_meta["megan_library_name"].tolist()
+    blank_cols         = blank_meta["megan_library_name"].tolist()
+
+    records        = []
+    unmatched_taxa = []
+
+    for row in tqdm(megan_df.to_dict(orient="records"), desc="Classifying taxa (no Holi)", unit="taxon"):
+        tax_id     = row.get("tax_id")
+        tax_id_str = row.get("tax_id_str") or ""
+        tax_name   = normalize_name(row.get("tax_name"))
+        tax_rank   = normalize_rank(row.get("tax_rank"))
+
+        counts      = {lib: float(row.get(lib, 0) or 0) for lib in megan_library_cols}
+        real_counts = {lib: counts[lib] for lib in real_cols}
+        blank_counts= {lib: counts[lib] for lib in blank_cols}
+
+        real_positive_libs  = [lib for lib, v in real_counts.items()  if v > 0]
+        blank_positive_libs = [lib for lib, v in blank_counts.items() if v > 0]
+
+        n_real_positive = len(real_positive_libs)
+        max_real_count  = max(real_counts.values())  if real_counts  else 0.0
+        max_blank_count = max(blank_counts.values()) if blank_counts else 0.0
+        blank_ratio     = (max_blank_count / max_real_count) if max_real_count > 0 else np.nan
+
+        strong_count_support = (
+            n_real_positive >= thresholds["strong_count_min_libraries"]
+            and max_real_count >= thresholds["strong_count_min_reads"]
+        )
+        some_count_support = n_real_positive >= 1
+
+        # Blank detection is purely MEGAN-count-driven here -- no Holi damage
+        # signal exists to corroborate blanks with, unlike the MEGAN-anchored
+        # body's blank_damage_support check.
+        blank_caution = (
+            max_blank_count >= thresholds["blank_absolute_min"]
+            or (max_real_count > 0 and max_blank_count / max_real_count >= thresholds["blank_relative_min"])
+        )
+        blank_associated = blank_caution and not strong_count_support
+
+        # ── Exact Fillet matching for real libraries ──────────────────────────
+        fillet_rows_real, fillet_authenticated_real = [], []
+        best_fillet = None
+        for _, meta_row in real_meta.iterrows():
+            megan_lib  = meta_row["megan_library_name"]
+            fillet_lib = meta_row.get("fillet_library_name")
+            if pd.isna(fillet_lib) or not fillet_lib or counts.get(megan_lib, 0) <= 0:
+                continue
+            rows = []
+            if tax_id_str:
+                rows.extend(fillet_exact_by_id.get((fillet_lib, tax_id_str), []))
+            if not rows and tax_name:
+                rows.extend(fillet_exact_by_name_rank.get((fillet_lib, tax_name, tax_rank), []))
+                if not rows:
+                    rows.extend(fillet_exact_by_name_rank.get((fillet_lib, tax_name, ""), []))
+            best = choose_best_fillet_row(rows, thresholds)
+            if best:
+                augmented = dict(best)
+                augmented["megan_library_name"] = megan_lib
+                fillet_rows_real.append(augmented)
+                if row_is_fillet_authenticated(best, thresholds):
+                    fillet_authenticated_real.append(augmented)
+        if fillet_rows_real:
+            best_fillet = max(
+                fillet_rows_real,
+                key=lambda x: (
+                    int(row_is_fillet_authenticated(x, thresholds)),
+                    float(x.get("composite_authenticity") or -np.inf),
+                    float(x.get("direct_hard_reads") or -np.inf),
+                ),
+            )
+
+        fillet_authenticated = len(fillet_authenticated_real) > 0
+        fillet_strong_count_support = any(
+            row_has_fillet_strong_count_support(x, thresholds) for x in fillet_rows_real
+        )
+        fillet_eco_support = any(bool(x.get("eco_support")) for x in fillet_authenticated_real)
+        fillet_pal_support = any(bool(x.get("pal_support")) for x in fillet_authenticated_real)
+        fillet_fos_support = any(bool(x.get("fos_support")) for x in fillet_authenticated_real)
+
+        # ── Canonical taxon info: no Holi taxonomy lookup available; fall
+        # back to Fillet's own name/rank lookup (still no tax_path, matching
+        # Fillet's export schema) ──────────────────────────────────────────
+        focal_info = None
+        if tax_id_str and tax_id_str in fillet_tax_lookup:
+            focal_info = fillet_tax_lookup[tax_id_str]
+        elif tax_name and tax_name in fillet_tax_lookup:
+            focal_info = fillet_tax_lookup[tax_name]
+        else:
+            unmatched_taxa.append(tax_name or tax_id_str or "unknown")
+            focal_info = {"tax_name": tax_name, "tax_rank": tax_rank, "tax_path": ""}
+
+        # No lineage support or discordance detection possible without a
+        # tax_path source (see docstring).
+        lineage_support = False
+        discordant       = False
+
+        evidence = TaxonEvidence(
+            megan=SourceSignals(
+                present=True,
+                strong_count_support=strong_count_support,
+                some_count_support=some_count_support,
+                blank_associated=blank_associated,
+            ),
+            holi=SourceSignals(present=False, blank_associated=blank_associated),
+            fillet=SourceSignals(
+                present=True,
+                exact_damage_support=fillet_authenticated,
+                strong_count_support=fillet_strong_count_support,
+                authenticated=fillet_authenticated,
+                eco_support=fillet_eco_support,
+                pal_support=fillet_pal_support,
+                fos_support=fillet_fos_support,
+            ),
+            lineage_support=lineage_support,
+            max_real_count=max_real_count,
+            discordant=discordant,
+        )
+        status, basis, ensemble_support_score, methods_agreement_count, methods_agreement_fraction = (
+            classify_status_v2(evidence, config)
+        )
+
+        common_name, common_name_source = resolve_common_name(
+            scientific_name=focal_info.get("tax_name", tax_name),
+            tax_id=tax_id,
+            builtin_map=config["taxonomy"]["builtin_common_name_map"],
+            override_map=common_name_overrides,
+            online=bool(config["taxonomy"].get("online_common_names")),
+            cache=common_name_cache,
+            language=config["taxonomy"].get("common_name_language", "eng"),
+        )
+        tax_path  = focal_info.get("tax_path", "")
+        broad_grp = _broad_group(tax_path)
+
+        record = {
+            "tax_id":                            tax_id,
+            "tax_id_str":                        tax_id_str,
+            "scientific_name":                   focal_info.get("tax_name", tax_name),
+            "tax_rank":                          focal_info.get("tax_rank", tax_rank),
+            "tax_path":                          tax_path,
+            "common_name":                       common_name,
+            "common_name_source":                common_name_source,
+            "broad_group":                       broad_grp,
+            "aDNA_support_status":               status,
+            "support_basis_summary":             basis,
+            "megan_positive_libraries_n":        n_real_positive,
+            "megan_positive_libraries":          "; ".join(real_positive_libs),
+            "megan_max_count":                   max_real_count,
+            "megan_blank_positive_libraries_n":  len(blank_positive_libs),
+            "megan_blank_positive_libraries":    "; ".join(blank_positive_libs),
+            "megan_blank_max_count":             max_blank_count,
+            "blank_ratio":                       blank_ratio,
+            "strong_count_support":              strong_count_support,
+            "some_count_support":                some_count_support,
+            "Holi_exact_damage_sig_libraries_n":       0,
+            "Holi_exact_damage_sig_libraries":          "",
+            "Holi_exact_damage_sig_ge100_libraries_n": 0,
+            "Low_rank_lineage_support_libraries_n":    0,
+            "Low_rank_lineage_support_libraries":       "",
+            "Low_rank_lineage_support_examples":        "",
+            "Holi_blank_exact_damage_sig":              False,
+            "Holi_blank_best_N_reads":                  np.nan,
+            "Holi_blank_best_damage":                   np.nan,
+            "Holi_blank_best_significance":             np.nan,
+            "ensemble_support_score":       round(ensemble_support_score, 4),
+            "methods_agreement_count":      methods_agreement_count,
+            "methods_agreement_fraction":   round(methods_agreement_fraction, 4),
+            "fillet_authenticated":         fillet_authenticated,
+            "fillet_composite_authenticity": (
+                float(best_fillet.get("composite_authenticity"))
+                if best_fillet is not None and pd.notna(best_fillet.get("composite_authenticity"))
+                else np.nan
+            ),
+            "fillet_authenticity_tier": (
+                int(best_fillet.get("authenticity_tier"))
+                if best_fillet is not None and pd.notna(best_fillet.get("authenticity_tier"))
+                else pd.NA
+            ),
+            "fillet_direct_reads": (
+                float(best_fillet.get("direct_hard_reads"))
+                if best_fillet is not None and pd.notna(best_fillet.get("direct_hard_reads"))
+                else np.nan
+            ),
+            "fillet_eco_support":  fillet_eco_support,
+            "fillet_pal_support":  fillet_pal_support,
+            "fillet_fos_support":  fillet_fos_support,
+            "fillet_holi_megan_discordant": discordant,
+        }
+
+        for _, meta_row in metadata.iterrows():
+            record["count__" + meta_row["merged_library_name"]] = counts.get(
+                meta_row["megan_library_name"], 0.0
+            )
+
+        # Per-library aDNA support status -- no Holi damage tiers possible
+        # here, so this collapses to Fillet-authenticated/Count-only/blank/
+        # env-control/not-detected.
+        for _, meta_row in metadata.iterrows():
+            megan_lib  = meta_row["megan_library_name"]
+            merged_lib = meta_row["merged_library_name"]
+            count_val  = counts.get(megan_lib, 0)
+            if meta_row["is_negative_control"]:
+                lib_adna = "Blank-library" if count_val > 0 else "Not detected"
+            elif bool(is_env_ctrl.get(meta_row.name, False)):
+                lib_adna = "Environmental-control" if count_val > 0 else "Not detected"
+            elif count_val <= 0:
+                lib_adna = "Not detected"
+            else:
+                lib_fillet = [x for x in fillet_authenticated_real if x.get("megan_library_name") == megan_lib]
+                lib_adna = "Damage-supported" if lib_fillet else "Count-only"
+            record[f"aDNA_support_lib__{merged_lib}"] = lib_adna
+
+        for _, meta_row in metadata.iterrows():
+            merged_lib = meta_row["merged_library_name"]
+            record[f"Holi_damage_lib__{merged_lib}"]       = np.nan
+            record[f"Holi_significance_lib__{merged_lib}"] = np.nan
+
+        record.update({
+            "Holi_best_library":             pd.NA,
+            "Holi_best_damage_source_taxon": pd.NA,
+            "Holi_best_tax_rank":            pd.NA,
+            "Holi_best_tax_path_short":      pd.NA,
+            "Holi_best_N_reads":             np.nan,
+            "Holi_best_N_alignments":        np.nan,
+            "Holi_best_damage":              np.nan,
+            "Holi_best_significance":        np.nan,
+            "Holi_best_abs_rho_Ac":          np.nan,
+            "Holi_best_MAP_valid":           pd.NA,
+            "Holi_best_multimapping_fit_qc": "not-applicable",
+            "Holi_best_alignments_per_read": np.nan,
+        })
+        record["Holi_blank_best_library"]             = pd.NA
+        record["Holi_blank_best_N_alignments"]        = np.nan
+        record["Holi_blank_best_alignments_per_read"] = np.nan
+
+        records.append(record)
+
+    if cache_path:
+        save_common_name_cache(cache_path, common_name_cache)
+
+    merged = pd.DataFrame.from_records(records)
+    if not merged.empty:
+        merged = merged.sort_values(
+            by=["aDNA_support_status", "megan_max_count", "scientific_name"],
+            key=lambda s: (
+                s.map(STATUS_PRIORITY).fillna(99)
+                if s.name == "aDNA_support_status"
+                else s
+            ),
+            ascending=[True, False, True],
+        )
+
+    summary = {
+        "n_taxa":                int(len(merged)),
+        "status_counts":         merged["aDNA_support_status"].value_counts(dropna=False).to_dict() if not merged.empty else {},
+        "unmatched_taxa_examples": sorted(set(x for x in unmatched_taxa if x))[:20],
+    }
+    return merged, summary
+
+
 def build_merge(
     metadata: pd.DataFrame,
     megan_df: pd.DataFrame | None,
@@ -732,19 +1042,19 @@ def build_merge(
     multi-proxy authentication (composite_authenticity/authenticity_tier plus
     eco/pal/fos ecological support lines).
 
-    Any non-empty subset of {MEGAN, Holi, Fillet} that includes Holi and/or
-    excludes MEGAN entirely is supported: pass ``None`` for whichever
-    source(s) are unavailable. When ``megan_df`` is ``None``, this delegates
-    to ``_build_merge_no_megan``, which builds the taxon universe and
-    per-library "real count" signal from whichever of Holi/Fillet are present
-    instead of a MEGAN count matrix -- this is Tyler's expected primary
-    real-world case going forward (Holi+Fillet, no MEGAN). At least one of
-    the three must be supplied. The one combination NOT yet supported is
-    MEGAN+Fillet with no Holi at all -- the MEGAN-anchored path below still
-    requires Holi (raises ``ValueError`` otherwise); this is a real, if
-    lower-priority, gap versus the full N-of-3 goal, deliberately left alone
-    to avoid touching the already-tested MEGAN-anchored code path for a
-    combination nobody has actually asked for yet.
+    Any non-empty subset of {MEGAN, Holi, Fillet} is supported: pass ``None``
+    for whichever source(s) are unavailable. When ``megan_df`` is ``None``,
+    this delegates to ``_build_merge_no_megan``, which builds the taxon
+    universe and per-library "real count" signal from whichever of
+    Holi/Fillet are present instead of a MEGAN count matrix -- this is
+    Tyler's expected primary real-world case going forward (Holi+Fillet, no
+    MEGAN). When ``holi_df`` is ``None`` but ``megan_df``/``fillet_df`` are
+    both supplied, this delegates to ``_build_merge_megan_fillet_no_holi``,
+    which keeps MEGAN's own taxon-anchored structure but adds real Fillet
+    exact-matching/authentication with no Holi lookups at all (no lineage
+    support or discordance detection is possible in that path, since both
+    require a real ``tax_path`` source, which only Holi supplies today). At
+    least one of the three must be supplied.
 
     Backward compatibility: when ``megan_df`` is supplied and ``fillet_df`` is
     ``None`` (the historical call signature), every taxon's DNA-support status
@@ -789,11 +1099,20 @@ def build_merge(
         )
 
     if holi_df is None:
-        raise ValueError(
-            "build_merge() was given megan_df but holi_df is None -- the "
-            "MEGAN-anchored merge path still requires Holi (MEGAN-only or "
-            "MEGAN+Fillet-without-Holi merges are not yet supported). Pass "
-            "megan_df=None instead for a Holi/Fillet-only merge."
+        if fillet_df is None:
+            raise ValueError(
+                "build_merge() was given megan_df but neither holi_df nor "
+                "fillet_df -- the MEGAN-anchored merge path needs at least "
+                "one of Holi or Fillet alongside MEGAN. Pass megan_df=None "
+                "instead for a Holi/Fillet-only merge."
+            )
+        return _build_merge_megan_fillet_no_holi(
+            metadata=metadata,
+            megan_df=megan_df,
+            fillet_df=fillet_df,
+            config=config,
+            common_name_overrides=common_name_overrides,
+            cache_path=cache_path,
         )
 
     thresholds  = config["thresholds"]
@@ -1106,7 +1425,9 @@ def build_merge(
             max_real_count=max_real_count,
             discordant=discordant,
         )
-        status, basis, ensemble_support_score = classify_status_v2(evidence, config)
+        status, basis, ensemble_support_score, methods_agreement_count, methods_agreement_fraction = (
+            classify_status_v2(evidence, config)
+        )
 
         # ── Common name ───────────────────────────────────────────────────────
         common_name, common_name_source = resolve_common_name(
@@ -1170,6 +1491,8 @@ def build_merge(
             # Fillet evidence -- Fillet-specific fields are simply NaN/False
             # when fillet_df is None) ──────────────────────────────────────
             "ensemble_support_score":       round(ensemble_support_score, 4),
+            "methods_agreement_count":      methods_agreement_count,
+            "methods_agreement_fraction":   round(methods_agreement_fraction, 4),
             "fillet_authenticated":         fillet_authenticated if have_fillet else pd.NA,
             "fillet_composite_authenticity": (
                 float(best_fillet.get("composite_authenticity"))

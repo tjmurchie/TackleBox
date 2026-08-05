@@ -713,10 +713,10 @@ def _apply_threshold_overrides(args, config: dict) -> None:
 def _validate_source_args(args) -> None:
     """Check the source-file combination before doing any loading work.
 
-    At least one of --megan-counts/--holi/--fillet must be given, and
-    --megan-counts additionally requires --holi (the MEGAN-anchored merge
-    path always needs Holi; a Holi/Fillet-only run with no MEGAN count matrix
-    at all omits --megan-counts instead).
+    Any non-empty subset of {--megan-counts, --holi, --fillet} is valid --
+    at least one of the three is required, and --megan-counts alone (with
+    neither --holi nor --fillet) is not, since there is nothing to merge it
+    against.
     """
     have_megan  = bool(getattr(args, "megan_counts", None))
     have_holi   = bool(getattr(args, "holi", None))
@@ -725,11 +725,10 @@ def _validate_source_args(args) -> None:
         raise SystemExit(
             "Error: at least one of --megan-counts, --holi, --fillet is required."
         )
-    if have_megan and not have_holi:
+    if have_megan and not have_holi and not have_fillet:
         raise SystemExit(
-            "Error: --megan-counts was given but --holi was not. The MEGAN-anchored "
-            "merge path always requires Holi. Omit --megan-counts entirely for a "
-            "Holi/Fillet-only run with no MEGAN count matrix."
+            "Error: --megan-counts was given but neither --holi nor --fillet was. "
+            "MEGAN alone has nothing to merge against -- add --holi and/or --fillet."
         )
 
 

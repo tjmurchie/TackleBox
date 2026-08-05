@@ -213,6 +213,23 @@ DEFAULT_CONFIG = {
         "fillet_support_line_bonus": 0.05,
     },
 
+    # Which source plays the "counts + primary support" role vs. "additional
+    # corroborating support" in a 2-source combination that includes Fillet
+    # (Tyler's design, 2026-08-05): Fillet's own composite_authenticity/
+    # authenticity_tier + eco/pal/fos lines already combine multiple evidence
+    # dimensions on their own, so by default Fillet alone can reach any status
+    # tier on its own strength in these combinations, with the other source's
+    # corroboration only ever upgrading -- never gating -- that assessment.
+    # MEGAN+Holi (the original 2-source combination) is untouched by this
+    # setting and always keeps its own established roles (MEGAN=counts,
+    # Holi=damage/significance support).
+    "source_roles": {
+        # "fillet" (default) or "holi".
+        "holi_fillet_primary":  "fillet",
+        # "fillet" (default) or "megan".
+        "megan_fillet_primary": "fillet",
+    },
+
     "lineage": {
         # Set to False to disable the lineage-support check entirely.
         "enabled": True,

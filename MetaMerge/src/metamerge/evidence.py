@@ -170,71 +170,157 @@ def _classify_megan_holi(ev: TaxonEvidence, thresholds: dict) -> tuple[str, str]
     )
 
 
-def _classify_holi_fillet(ev: TaxonEvidence, thresholds: dict) -> tuple[str, str]:
+def _classify_primary_additional(
+    primary_authenticated: bool,
+    primary_strong: bool,
+    primary_extra_lines: bool,
+    primary_name: str,
+    additional_strong: bool,
+    additional_some: bool,
+    additional_name: str,
+    lineage_support: bool,
+    max_real_count: float,
+    thresholds: dict,
+) -> tuple[str, str]:
+    """Generic 2-source cascade for a "primary" source that supplies BOTH
+    counts and its own authentication decision, plus an "additional" source
+    that can only ever upgrade the resulting tier, never gate it.
+
+    Used for both Holi+Fillet and MEGAN+Fillet (Tyler's design, 2026-08-05):
+    by default Fillet is the primary source in both, since its own
+    composite_authenticity/authenticity_tier + eco/pal/fos lines already
+    combine multiple evidence dimensions on their own (unlike a bare MEGAN
+    count or a bare Holi damage/significance pair) -- Fillet alone can reach
+    any tier here on its own strength. The role assignment is swappable via
+    config["source_roles"], in which case the caller passes the OTHER
+    source's own fields into the primary_* parameters instead.
+
+    Args:
+        primary_authenticated: Primary source's own pass/fail decision.
+        primary_strong: Primary source's own "strong count support" signal.
+        primary_extra_lines: An independent corroborating line the primary
+            source itself supplies (e.g. Fillet's eco/pal/fos support) --
+            False for sources with no such extra line (e.g. Holi, MEGAN).
+        primary_name: Display name for basis text (e.g. "Fillet").
+        additional_strong: Additional source's strongest support signal.
+        additional_some: Additional source's weaker/baseline support signal.
+        additional_name: Display name for basis text (e.g. "Holi").
+        lineage_support: Whether lineage-consistent support exists.
+        max_real_count: Best available real-count signal across sources.
+        thresholds: The "thresholds" sub-dict of the MetaMerge config.
+    """
+    # "Very high confidence" needs the primary source authenticated PLUS at
+    # least 2 of its 3 possible corroborating signals (its own strong counts,
+    # its own extra eco/pal/fos-style line, the additional source's strongest
+    # signal) -- deliberately not a hard requirement on primary_strong
+    # specifically, so the additional source's own strong corroboration can
+    # substitute for it (e.g. Fillet authenticated + eco support + Holi's
+    # >=100-read exact damage support reaches the top tier even without
+    # Fillet's own read count independently clearing its strong-count bar).
+    strength_signal_count = sum([primary_strong, primary_extra_lines, additional_strong])
+    if primary_authenticated and strength_signal_count >= 2:
+        basis = [f"{primary_name}-authenticated"]
+        if primary_strong:
+            basis.append(f"strong {primary_name} counts")
+        if primary_extra_lines:
+            basis.append("independent eco/pal/fos support")
+        if additional_strong:
+            basis.append(f"{additional_name} strongly corroborates")
+        return "Very high confidence", "; ".join(basis)
+
+    if primary_authenticated and (primary_strong or primary_extra_lines or additional_some):
+        basis = [f"{primary_name}-authenticated"]
+        if primary_strong:
+            basis.append(f"strong {primary_name} counts")
+        if primary_extra_lines:
+            basis.append("independent eco/pal/fos support")
+        if additional_some:
+            basis.append(f"{additional_name} corroborates")
+        return "High confidence", "; ".join(basis)
+
+    if primary_authenticated or primary_strong or additional_some or lineage_support:
+        basis = []
+        if primary_authenticated:
+            basis.append(f"{primary_name}-authenticated")
+        if primary_strong:
+            basis.append(f"strong {primary_name} counts")
+        if additional_some:
+            basis.append(f"{additional_name} support")
+        if lineage_support:
+            basis.append("lineage-supported")
+        return "Supported", "; ".join(basis) if basis else "supported"
+
+    if max_real_count >= thresholds["tentative_min_reads"]:
+        return "Tentative", "weak/incomplete DNA support"
+    if max_real_count >= thresholds["weak_support_min_reads"]:
+        return "Weak support", "very weak DNA support"
+    return "Weak support", "no non-control support"
+
+
+def _classify_holi_fillet(ev: TaxonEvidence, thresholds: dict, primary: str = "fillet") -> tuple[str, str]:
     """Holi+Fillet, no MEGAN. Tyler's expected primary real-world 2-source case
-    going forward. There is no MEGAN count matrix, so "count support" comes
-    from Fillet's own direct_hard_reads instead of MEGAN's per-library counts;
-    Fillet's own authentication (composite_authenticity + authenticity_tier)
-    substitutes for MEGAN's "strong_count_support" role in the original
-    cascade's structure, since it is itself already a read-count-aware signal."""
-    fillet_count_support = bool(ev.fillet.strong_count_support)
-    if ev.holi.exact_damage_support_ge100 and (fillet_count_support or ev.fillet.authenticated):
-        if ev.fillet.authenticated and (ev.fillet.eco_support or ev.fillet.pal_support or ev.fillet.fos_support):
-            return (
-                "Very high confidence",
-                "Holi exact damage-supported (>=100 reads); Fillet-authenticated with independent eco/pal/fos support",
-            )
-        return (
-            "Very high confidence",
-            "Holi exact damage-supported (>=100 reads); Fillet count/authenticity support",
+    going forward. Default role assignment (primary="fillet"): Fillet is the
+    counts+support source, Holi is additional corroborating support -- override
+    with config["source_roles"]["holi_fillet_primary"]="holi" to swap them."""
+    fillet_extra_lines = bool(ev.fillet.eco_support or ev.fillet.pal_support or ev.fillet.fos_support)
+    if primary == "holi":
+        return _classify_primary_additional(
+            primary_authenticated=bool(ev.holi.exact_damage_support),
+            primary_strong=bool(ev.holi.exact_damage_support_ge100),
+            primary_extra_lines=False,
+            primary_name="Holi",
+            additional_strong=bool(ev.fillet.authenticated and fillet_extra_lines),
+            additional_some=bool(ev.fillet.authenticated or ev.fillet.strong_count_support),
+            additional_name="Fillet",
+            lineage_support=ev.lineage_support,
+            max_real_count=ev.max_real_count,
+            thresholds=thresholds,
         )
-    if ev.holi.exact_damage_support and (fillet_count_support or ev.fillet.authenticated):
-        return "High confidence", "Holi exact damage-supported; Fillet count/authenticity support"
-    if ev.holi.exact_damage_support or fillet_count_support or ev.fillet.authenticated or ev.lineage_support:
-        basis = []
-        if ev.holi.exact_damage_support:
-            basis.append("Holi damage-supported (exact)")
-        if ev.fillet.authenticated:
-            basis.append("Fillet-authenticated")
-        if fillet_count_support:
-            basis.append("Fillet strong counts")
-        if ev.lineage_support:
-            basis.append("lineage-supported")
-        return "Supported", "; ".join(basis)
-    if ev.max_real_count >= thresholds["tentative_min_reads"]:
-        return "Tentative", "weak/incomplete DNA support"
-    if ev.max_real_count >= thresholds["weak_support_min_reads"]:
-        return "Weak support", "very weak DNA support"
-    return "Weak support", "no non-control support"
+    return _classify_primary_additional(
+        primary_authenticated=bool(ev.fillet.authenticated),
+        primary_strong=bool(ev.fillet.strong_count_support),
+        primary_extra_lines=fillet_extra_lines,
+        primary_name="Fillet",
+        additional_strong=bool(ev.holi.exact_damage_support_ge100),
+        additional_some=bool(ev.holi.exact_damage_support),
+        additional_name="Holi",
+        lineage_support=ev.lineage_support,
+        max_real_count=ev.max_real_count,
+        thresholds=thresholds,
+    )
 
 
-def _classify_megan_fillet(ev: TaxonEvidence, thresholds: dict) -> tuple[str, str]:
-    """MEGAN+Fillet, no Holi -- Fillet's own damage assessment substitutes for
-    Holi's exact-damage-support role."""
-    fillet_damage_ok = bool(ev.fillet.exact_damage_support)
-    if fillet_damage_ok and ev.megan.strong_count_support:
-        basis = "Fillet damage-supported; strong MEGAN counts"
-        if ev.fillet.authenticated:
-            basis += "; Fillet-authenticated"
-        return "High confidence", basis
-    if fillet_damage_ok or ev.megan.strong_count_support or ev.fillet.authenticated or (ev.lineage_support and ev.megan.some_count_support):
-        basis = []
-        if fillet_damage_ok:
-            basis.append("Fillet damage-supported")
-        if ev.megan.strong_count_support:
-            basis.append("strong MEGAN counts")
-        elif ev.megan.some_count_support:
-            basis.append("some MEGAN counts")
-        if ev.fillet.authenticated:
-            basis.append("Fillet-authenticated")
-        if ev.lineage_support:
-            basis.append("lineage-supported")
-        return "Supported", "; ".join(basis)
-    if ev.max_real_count >= thresholds["tentative_min_reads"]:
-        return "Tentative", "weak/incomplete DNA support"
-    if ev.max_real_count >= thresholds["weak_support_min_reads"]:
-        return "Weak support", "very weak DNA support"
-    return "Weak support", "no non-control support"
+def _classify_megan_fillet(ev: TaxonEvidence, thresholds: dict, primary: str = "fillet") -> tuple[str, str]:
+    """MEGAN+Fillet, no Holi. Default role assignment (primary="fillet"):
+    Fillet is the counts+support source, MEGAN's own counts are additional
+    corroborating support -- override with
+    config["source_roles"]["megan_fillet_primary"]="megan" to swap them."""
+    fillet_extra_lines = bool(ev.fillet.eco_support or ev.fillet.pal_support or ev.fillet.fos_support)
+    if primary == "megan":
+        return _classify_primary_additional(
+            primary_authenticated=bool(ev.megan.strong_count_support),
+            primary_strong=bool(ev.megan.strong_count_support),
+            primary_extra_lines=False,
+            primary_name="MEGAN",
+            additional_strong=bool(ev.fillet.authenticated and fillet_extra_lines),
+            additional_some=bool(ev.fillet.authenticated or ev.fillet.exact_damage_support),
+            additional_name="Fillet",
+            lineage_support=bool(ev.lineage_support and ev.megan.some_count_support),
+            max_real_count=ev.max_real_count,
+            thresholds=thresholds,
+        )
+    return _classify_primary_additional(
+        primary_authenticated=bool(ev.fillet.authenticated),
+        primary_strong=bool(ev.fillet.strong_count_support),
+        primary_extra_lines=fillet_extra_lines,
+        primary_name="Fillet",
+        additional_strong=bool(ev.megan.strong_count_support),
+        additional_some=bool(ev.megan.some_count_support),
+        additional_name="MEGAN",
+        lineage_support=ev.lineage_support,
+        max_real_count=ev.max_real_count,
+        thresholds=thresholds,
+    )
 
 
 def _classify_single_source(source: SourceSignals, source_name: str, max_real_count: float, thresholds: dict) -> tuple[str, str]:
@@ -268,37 +354,91 @@ _DEFAULT_ENSEMBLE_WEIGHTS = {
     "fillet_support_line_bonus": 0.05,
 }
 
+# Minimum agreeing/present sources for the "N-source corroborated" upgrade
+# tier below. Kept as a module constant rather than a config threshold since
+# it's a structural property of the status vocabulary (what "corroborated"
+# means), not a per-project tuning knob like the count/damage thresholds.
+_MIN_SOURCES_FOR_CORROBORATION_BONUS = 3
+
+
+def _source_supports(signals: SourceSignals, name: str) -> bool:
+    """Whether one source's OWN evidence, on its own terms, counts as
+    supporting a taxon -- the equal-weight building block for
+    ``compute_methods_agreement``, deliberately independent of
+    ``compute_ensemble_support_score``'s trust-weighted formula (Tyler,
+    2026-08-05: "two separate metrics", not one score trying to do both)."""
+    if not signals.present:
+        return False
+    if name == "fillet":
+        return bool(signals.authenticated)
+    if name == "holi":
+        return bool(signals.exact_damage_support)
+    if name == "megan":
+        return bool(signals.strong_count_support)
+    return False
+
+
+def compute_methods_agreement(ev: TaxonEvidence) -> tuple[int, int]:
+    """Equal-weight "how many methods agree" tally, computed alongside (not
+    instead of) ``compute_ensemble_support_score``. Every present source that
+    clears its OWN authentication bar counts exactly 1, regardless of which
+    tool it is or how it's weighted in the trust-weighted score -- this is
+    the metric that genuinely generalizes to N classifiers and matches
+    Tyler's own framing of the ensemble score as fundamentally "how many
+    methods agree."
+
+    Returns:
+        Tuple of ``(agreement_count, sources_present_count)``.
+    """
+    sources = [(ev.megan, "megan"), (ev.holi, "holi"), (ev.fillet, "fillet")]
+    sources_present = sum(1 for s, _ in sources if s.present)
+    agreement_count = sum(1 for s, name in sources if s.present and _source_supports(s, name))
+    return agreement_count, sources_present
+
 
 def classify_status_v2(
     ev: TaxonEvidence, config: dict,
-) -> tuple[str, str, float]:
+) -> tuple[str, str, float, int, float]:
     """Source-agnostic classification: works for any non-empty subset of
     {MEGAN, Holi, Fillet} evidence present for a taxon.
 
     Args:
         ev: The taxon's evidence bundle.
-        config: Full MetaMerge config dict (uses config["thresholds"] and
-            config.get("ensemble_score", {})).
+        config: Full MetaMerge config dict (uses config["thresholds"],
+            config.get("ensemble_score", {}), and
+            config.get("source_roles", {})).
 
-    Returns (status, basis_summary, ensemble_support_score). status uses the
-    same vocabulary as classify_status() (Very high confidence / High
-    confidence / Supported / Tentative / Weak support / Blank-associated) plus
-    one new value ("Very high confidence (3-source corroborated)") reachable
-    only when all three sources are present and mutually agree.
+    Returns:
+        Tuple of ``(status, basis_summary, ensemble_support_score,
+        methods_agreement_count, methods_agreement_fraction)``. status uses
+        the same vocabulary as classify_status() (Very high confidence / High
+        confidence / Supported / Tentative / Weak support / Blank-associated)
+        plus one new value ("Very high confidence (N-source corroborated)")
+        reachable when at least 3 present sources independently support AND
+        agree on the call, for whatever N that turns out to be (today capped
+        at 3 since only MEGAN/Holi/Fillet exist; generalizes automatically if
+        more sources are added later).
     """
-    thresholds = config["thresholds"]
+    thresholds   = config["thresholds"]
+    source_roles = config.get("source_roles", {})
 
     if ev.megan.blank_associated or ev.holi.blank_associated:
-        return "Blank-associated", "blank-associated", 0.0
+        return "Blank-associated", "blank-associated", 0.0, 0, 0.0
 
     have_megan, have_holi, have_fillet = ev.megan.present, ev.holi.present, ev.fillet.present
+    agreement_count, sources_present = compute_methods_agreement(ev)
+    agreement_fraction = (agreement_count / sources_present) if sources_present else 0.0
 
     if have_megan and have_holi:
         status, basis = _classify_megan_holi(ev, thresholds)
     elif have_holi and have_fillet:
-        status, basis = _classify_holi_fillet(ev, thresholds)
+        status, basis = _classify_holi_fillet(
+            ev, thresholds, primary=source_roles.get("holi_fillet_primary", "fillet")
+        )
     elif have_megan and have_fillet:
-        status, basis = _classify_megan_fillet(ev, thresholds)
+        status, basis = _classify_megan_fillet(
+            ev, thresholds, primary=source_roles.get("megan_fillet_primary", "fillet")
+        )
     elif have_megan:
         status, basis = _classify_single_source(ev.megan, "megan", ev.max_real_count, thresholds)
     elif have_holi:
@@ -306,25 +446,27 @@ def classify_status_v2(
     elif have_fillet:
         status, basis = _classify_single_source(ev.fillet, "fillet", ev.max_real_count, thresholds)
     else:
-        return "Weak support", "no evidence source data for this taxon", 0.0
+        return "Weak support", "no evidence source data for this taxon", 0.0, 0, 0.0
 
-    # 3-source corroboration upgrade: only reachable when all three sources
-    # independently support the taxon AND their taxonomic calls agree.
+    # N-source corroboration upgrade: reachable when at least
+    # _MIN_SOURCES_FOR_CORROBORATION_BONUS present sources independently
+    # support the taxon. Generalizes the original hardcoded "all 3 of MEGAN/
+    # Holi/Fillet present and agree" check to the equal-weight methods_
+    # agreement tally, so it scales automatically if more sources are added.
     if (
-        have_megan and have_holi and have_fillet
+        sources_present >= _MIN_SOURCES_FOR_CORROBORATION_BONUS
+        and agreement_count >= _MIN_SOURCES_FOR_CORROBORATION_BONUS
         and status in ("Very high confidence", "High confidence")
-        and ev.fillet.authenticated
-        and (ev.fillet.eco_support or ev.fillet.pal_support or ev.fillet.fos_support)
         and not ev.discordant
     ):
-        status = "Very high confidence (3-source corroborated)"
-        basis += "; Fillet-authenticated with independent eco/pal/fos support, all 3 sources agree"
+        status = f"Very high confidence ({agreement_count}-source corroborated)"
+        basis += f"; {agreement_count} of {sources_present} independent methods agree"
 
     if ev.discordant:
         basis += "; NOTE: Fillet's taxonomic call disagrees with MEGAN/Holi beyond the lineage rank-cap"
 
     score = compute_ensemble_support_score(ev, config.get("ensemble_score", {}))
-    return status, basis, score
+    return status, basis, score, agreement_count, agreement_fraction
 
 
 def compute_ensemble_support_score(ev: TaxonEvidence, ensemble_weights: dict | None = None) -> float:
