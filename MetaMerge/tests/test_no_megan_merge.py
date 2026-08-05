@@ -87,6 +87,30 @@ class TestHoliFilletNoMegan:
         merged, _ = build_merge(_base_metadata(), None, holi, config, fillet_df=None)
         assert merged.iloc[0]["aDNA_support_status"] == "Blank-associated"
 
+    def test_per_library_badge_combines_fillet_and_holi(self, config):
+        """Tyler, 2026-08-05: 'the authenticity badge is the authenticity
+        score expanded to be Fillet+Holi'. Holi alone at 50 reads (below the
+        >=100-read top label) should still reach the top per-library label
+        when Fillet ALSO authenticates that same library -- dual
+        corroboration in one library is stronger evidence than either source
+        alone, mirroring the taxon-level cascade's own logic."""
+        holi_weak = _holi_df(n_reads=(50.0, 50.0, 0.0), damage=(0.12, 0.12, 0.0), sig=(3.5, 3.5, 0.0))
+        merged, _ = build_merge(_base_metadata(), None, holi_weak, config, fillet_df=_fillet_df())
+        row = merged.iloc[0]
+        # Holi alone (50 reads) would only reach "Damage-supported" -- Fillet's
+        # corroboration in the same library promotes it to the top label.
+        assert row["aDNA_support_lib__Real1"] == "Damage-supported (>=100 reads)"
+        assert row["methods_agreement_lib__Real1"] == 2
+
+    def test_per_library_badge_holi_only_below_ge100_stays_lower_tier(self, config):
+        """Control case: without Fillet's corroboration, Holi alone at 50
+        reads does NOT reach the top per-library label."""
+        holi_weak = _holi_df(n_reads=(50.0, 50.0, 0.0), damage=(0.12, 0.12, 0.0), sig=(3.5, 3.5, 0.0))
+        merged, _ = build_merge(_base_metadata(), None, holi_weak, config, fillet_df=None)
+        row = merged.iloc[0]
+        assert row["aDNA_support_lib__Real1"] == "Damage-supported"
+        assert row["methods_agreement_lib__Real1"] == 1
+
     def test_taxon_present_only_in_fillet_still_appears(self, config):
         """A taxon Holi never saw at all (e.g. Holi's alignment missed it) but
         Fillet independently authenticated should still surface -- this is a

@@ -470,6 +470,10 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
   if (is.null(pages)) return(invisible(NULL))
 
   if (!"is_environmental_control" %in% names(dat)) dat$is_environmental_control <- FALSE
+  # plot_methods_agreement is absent from report_inputs written by older
+  # MetaMerge versions (pre ensemble-tier badge) -- default to 0 so those
+  # runs still render, just without the new upper-left badge.
+  if (!"plot_methods_agreement" %in% names(dat)) dat$plot_methods_agreement <- 0
 
   x_label_map <- resolve_x_order(dat %>% filter(plot_group == subset_name), subset_name)
   x_levels    <- names(x_label_map)
@@ -539,6 +543,7 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         tax_rank                 = dplyr::first(stats::na.omit(tax_rank)),
         count                    = sum(count, na.rm = TRUE),
         raw_library_adna_support = dplyr::first(stats::na.omit(as.character(library_adna_support))),
+        raw_methods_agreement    = suppressWarnings(max(plot_methods_agreement, na.rm = TRUE)),
         is_negative_control      = dplyr::first(stats::na.omit(is_negative_control)),
         sample_type              = dplyr::first(stats::na.omit(sample_type)),
         .groups = "drop"
@@ -555,7 +560,9 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
           map_library_support(raw_library_adna_support) == "Blank-associated",
           "#CC0000",   # red for blank-associated — makes contamination signal visible
           vapply(as.character(count_bin), symbol_contrast_color, character(1))
-        )
+        ),
+        # -Inf when no row contributed (max() over an all-NA group) -> 0.
+        methods_agreement = ifelse(is.infinite(raw_methods_agreement), 0, raw_methods_agreement)
       ) %>%
       left_join(label_df %>% select(taxon_key, row_id), by = "taxon_key") %>%
       mutate(
@@ -582,6 +589,11 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       mutate(yint = n_rows - group_end + 0.5)
 
     symbol_dat <- page_dat %>% filter(!is.na(library_support_display))
+    # Ensemble-tier badge: only drawn when >=2 methods actually corroborate a
+    # cell (a single method isn't "agreement") -- upper-left, size grows with
+    # the raw agreement count so it scales automatically for however many
+    # classifiers are present (Tyler, 2026-08-05: "as simple raw counts").
+    agreement_dat <- page_dat %>% filter(methods_agreement >= 2)
 
     # Per-page column widths — sized to longest text on THIS page only.
     group_width  <- panel_width(label_df$display_group_label, min_width = 0.35, max_width = 1.8, char_scale = 0.055)
@@ -683,6 +695,17 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
       geom_point(data = legend_df,
                  aes(x = plot_sample_id, y = taxon_key, shape = library_support_display),
                  inherit.aes = FALSE, alpha = 0, size = 3.0, show.legend = TRUE) +
+      # Ensemble-tier badge — upper-left, fixed shape (filled circle) whose
+      # SIZE grows with the raw count of methods agreeing on this call
+      # (Tyler, 2026-08-05), rather than a categorical shape like the
+      # upper-right support symbol -- scales automatically for however many
+      # classifiers are present, not just today's MEGAN/Holi/Fillet trio.
+      # Only drawn when >=2 methods corroborate (see agreement_dat above).
+      geom_point(data = agreement_dat,
+                 aes(size = methods_agreement),
+                 shape = 16, colour = "#1a1a1a",
+                 position = position_nudge(x = -0.37, y = 0.18),
+                 stroke = 0, show.legend = TRUE, na.rm = TRUE) +
       # Count text labels.
       geom_text(aes(x = plot_sample_id, y = taxon_key,
                     label = count_text, colour = count_text_color),
@@ -702,11 +725,17 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
         limits = lib_support_levels, drop = FALSE,
         name   = "Per-library aDNA support"
       ) +
+      scale_size_continuous(
+        range  = c(1.4, 3.4),
+        breaks = scales::breaks_pretty(n = 3),
+        name   = "Methods agreeing\n(ensemble tier)"
+      ) +
       scale_colour_identity() +
       guides(
         fill   = guide_legend(order = 1, override.aes = list(alpha = 1, size = 4, shape = NA, colour = NA)),
         shape  = guide_legend(order = 2, override.aes = list(alpha = 1, size = 2.8,
                              colour = c("#000000","#000000","#000000","#000000","#000000","#CC0000","#000000"))),
+        size   = guide_legend(order = 3, override.aes = list(shape = 16, colour = "#1a1a1a")),
         colour = "none"
       ) +
       shared_y +

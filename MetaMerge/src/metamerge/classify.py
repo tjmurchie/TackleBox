@@ -161,6 +161,61 @@ def _real_count_proxy(holi_rows: list[dict], fillet_rows: list[dict]) -> float:
     return 0.0
 
 
+def _per_library_adna_label(
+    lib_holi_damage_rows: list[dict],
+    lib_fillet_auth_rows: list[dict],
+    thresholds: dict,
+) -> tuple[str | None, int]:
+    """Per-library aDNA_support_lib__ label, Fillet+Holi combined when both
+    have a signal for this SPECIFIC library (Tyler, 2026-08-05: "the
+    authenticity badge is the authenticity score expanded to be Fillet+Holi,
+    given both can give their own damage/significance/likelihood metrics").
+
+    Dual corroboration in the same library -- Holi's own damage signal AND
+    Fillet's own authentication BOTH present for this library -- reaches the
+    top label even when Holi's own read count alone doesn't independently
+    clear the >=100-read bar, mirroring the taxon-level cascade's own
+    "2 of 3 corroborating signals reaches the top tier" logic. Deliberately
+    reuses the SAME label strings regardless of which source(s) contributed
+    (rather than inventing new category strings per combination), since the
+    per-source breakdown is already visible elsewhere in the output
+    (fillet_authenticated, Holi_damage_lib__, etc.) -- this keeps the R
+    heatmap's existing shape legend unchanged.
+
+    Returns:
+        Tuple of ``(label_or_None, per_library_methods_agreement_count)``.
+        ``label`` is ``None`` when neither source has a signal for this
+        library, so the caller falls back to its own Lineage-supported/
+        Count-only logic.
+    """
+    holi_ok   = len(lib_holi_damage_rows) > 0
+    fillet_ok = len(lib_fillet_auth_rows) > 0
+    agreement = int(holi_ok) + int(fillet_ok)
+
+    if not holi_ok and not fillet_ok:
+        return None, agreement
+
+    has_ge100 = holi_ok and any(
+        float(x.get("N_reads") or 0) >= thresholds["high_confidence_n_reads_min"]
+        for x in lib_holi_damage_rows
+    )
+    qc_ok = True
+    if holi_ok:
+        best_lib = max(lib_holi_damage_rows, key=lambda x: float(x.get("N_reads") or 0))
+        lib_qc, _ = compute_qc_label(
+            n_reads=best_lib.get("N_reads"),
+            n_alignments=best_lib.get("N_alignments"),
+            map_valid=bool(best_lib.get("MAP_valid")),
+            rho_ac=best_lib.get("rho_Ac"),
+            thresholds=thresholds,
+        )
+        qc_ok = lib_qc != "strong caution"
+
+    if (has_ge100 or (holi_ok and fillet_ok)) and qc_ok:
+        return "Damage-supported (>=100 reads)", agreement
+    return "Damage-supported", agreement
+
+
 def _build_merge_no_megan(
     metadata: pd.DataFrame,
     holi_df: pd.DataFrame | None,
@@ -567,12 +622,16 @@ def _build_merge_no_megan(
             merged_lib = meta_row["merged_library_name"]
             record["count__" + merged_lib] = all_lib_counts.get(merged_lib, 0.0)
 
-        # Per-library aDNA support status (aDNA_support_lib__).
+        # Per-library aDNA support status (aDNA_support_lib__), Fillet+Holi
+        # combined when both have a signal for this specific library -- plus
+        # a per-library methods_agreement_lib__ count driving the R
+        # heatmap's separate ensemble-tier badge (see _per_library_adna_label).
         lineage_support_holi_libs = set(lineage_support_libraries)
         for _, meta_row in metadata.iterrows():
             merged_lib = meta_row["merged_library_name"]
             holi_lib   = meta_row.get("holi_library_name")
             count_val  = all_lib_counts.get(merged_lib, 0)
+            lib_agreement = 0
 
             if meta_row["is_negative_control"]:
                 lib_adna = "Blank-library" if count_val > 0 else "Not detected"
@@ -585,33 +644,16 @@ def _build_merge_no_megan(
                     x for x in exact_damage_supported_real
                     if x.get("merged_library_name") == merged_lib
                 ]
-                if lib_dmg:
-                    has_ge100 = any(
-                        float(x.get("N_reads") or 0) >= thresholds["high_confidence_n_reads_min"]
-                        for x in lib_dmg
-                    )
-                    if has_ge100:
-                        best_lib = max(lib_dmg, key=lambda x: float(x.get("N_reads") or 0))
-                        lib_qc, _ = compute_qc_label(
-                            n_reads=best_lib.get("N_reads"),
-                            n_alignments=best_lib.get("N_alignments"),
-                            map_valid=bool(best_lib.get("MAP_valid")),
-                            rho_ac=best_lib.get("rho_Ac"),
-                            thresholds=thresholds,
-                        )
-                        lib_adna = (
-                            "Damage-supported (>=100 reads)"
-                            if lib_qc != "strong caution"
-                            else "Damage-supported"
-                        )
-                    else:
-                        lib_adna = "Damage-supported"
-                elif holi_lib in lineage_support_holi_libs:
-                    lib_adna = "Lineage-supported"
-                else:
-                    lib_adna = "Count-only"
+                lib_fillet_auth = [
+                    x for x in fillet_authenticated_real
+                    if x.get("merged_library_name") == merged_lib
+                ]
+                lib_adna, lib_agreement = _per_library_adna_label(lib_dmg, lib_fillet_auth, thresholds)
+                if lib_adna is None:
+                    lib_adna = "Lineage-supported" if holi_lib in lineage_support_holi_libs else "Count-only"
 
-            record[f"aDNA_support_lib__{merged_lib}"] = lib_adna
+            record[f"aDNA_support_lib__{merged_lib}"]        = lib_adna
+            record[f"methods_agreement_lib__{merged_lib}"]   = lib_agreement
 
         # Per-library Holi damage values.
         for _, meta_row in metadata.iterrows():
@@ -959,12 +1001,15 @@ def _build_merge_megan_fillet_no_holi(
             )
 
         # Per-library aDNA support status -- no Holi damage tiers possible
-        # here, so this collapses to Fillet-authenticated/Count-only/blank/
-        # env-control/not-detected.
+        # here (lib_dmg is always empty), so _per_library_adna_label
+        # collapses to Fillet-authenticated/Count-only/blank/env-control/
+        # not-detected. Still reuses the shared helper for consistency with
+        # the other two build paths' methods_agreement_lib__ column.
         for _, meta_row in metadata.iterrows():
             megan_lib  = meta_row["megan_library_name"]
             merged_lib = meta_row["merged_library_name"]
             count_val  = counts.get(megan_lib, 0)
+            lib_agreement = 0
             if meta_row["is_negative_control"]:
                 lib_adna = "Blank-library" if count_val > 0 else "Not detected"
             elif bool(is_env_ctrl.get(meta_row.name, False)):
@@ -972,9 +1017,12 @@ def _build_merge_megan_fillet_no_holi(
             elif count_val <= 0:
                 lib_adna = "Not detected"
             else:
-                lib_fillet = [x for x in fillet_authenticated_real if x.get("megan_library_name") == megan_lib]
-                lib_adna = "Damage-supported" if lib_fillet else "Count-only"
-            record[f"aDNA_support_lib__{merged_lib}"] = lib_adna
+                lib_fillet_auth = [x for x in fillet_authenticated_real if x.get("megan_library_name") == megan_lib]
+                lib_adna, lib_agreement = _per_library_adna_label([], lib_fillet_auth, thresholds)
+                if lib_adna is None:
+                    lib_adna = "Count-only"
+            record[f"aDNA_support_lib__{merged_lib}"]      = lib_adna
+            record[f"methods_agreement_lib__{merged_lib}"] = lib_agreement
 
         for _, meta_row in metadata.iterrows():
             merged_lib = meta_row["merged_library_name"]
@@ -1521,7 +1569,10 @@ def build_merge(
                 meta_row["megan_library_name"], 0.0
             )
 
-        # Per-library aDNA support status (prefixed with aDNA_support_lib__).
+        # Per-library aDNA support status (prefixed with aDNA_support_lib__),
+        # Fillet+Holi combined when both have a signal for this specific
+        # library -- plus a per-library methods_agreement_lib__ count driving
+        # the R heatmap's separate ensemble-tier badge.
         lineage_support_holi_libs = set(lineage_support_libraries)
         for _, meta_row in metadata.iterrows():
             megan_lib  = meta_row["megan_library_name"]
@@ -1529,6 +1580,7 @@ def build_merge(
             merged_lib = meta_row["merged_library_name"]
             count_val  = counts.get(megan_lib, 0)
             is_pos = bool(is_pos_ctrl.get(meta_row.name, False))
+            lib_agreement = 0
 
             if meta_row["is_negative_control"]:
                 lib_adna = "Blank-library" if count_val > 0 else "Not detected"
@@ -1541,40 +1593,16 @@ def build_merge(
                     x for x in exact_damage_supported_real
                     if x.get("megan_library_name") == megan_lib
                 ]
-                if lib_dmg:
-                    has_ge100 = any(
-                        float(x.get("N_reads") or 0) >= thresholds["high_confidence_n_reads_min"]
-                        for x in lib_dmg
-                    )
-                    if has_ge100:
-                        # Only award the top label when the best-supported row also has
-                        # acceptable QC — a "strong caution" flag (e.g. extreme
-                        # multi-mapping) makes the damage estimate unreliable regardless
-                        # of read count.
-                        best_lib = max(
-                            lib_dmg,
-                            key=lambda x: float(x.get("N_reads") or 0),
-                        )
-                        lib_qc, _ = compute_qc_label(
-                            n_reads=best_lib.get("N_reads"),
-                            n_alignments=best_lib.get("N_alignments"),
-                            map_valid=bool(best_lib.get("MAP_valid")),
-                            rho_ac=best_lib.get("rho_Ac"),
-                            thresholds=thresholds,
-                        )
-                        lib_adna = (
-                            "Damage-supported (>=100 reads)"
-                            if lib_qc != "strong caution"
-                            else "Damage-supported"
-                        )
-                    else:
-                        lib_adna = "Damage-supported"
-                elif holi_lib in lineage_support_holi_libs:
-                    lib_adna = "Lineage-supported"
-                else:
-                    lib_adna = "Count-only"
+                lib_fillet_auth = [
+                    x for x in fillet_authenticated_real
+                    if x.get("megan_library_name") == megan_lib
+                ]
+                lib_adna, lib_agreement = _per_library_adna_label(lib_dmg, lib_fillet_auth, thresholds)
+                if lib_adna is None:
+                    lib_adna = "Lineage-supported" if holi_lib in lineage_support_holi_libs else "Count-only"
 
-            record[f"aDNA_support_lib__{merged_lib}"] = lib_adna
+            record[f"aDNA_support_lib__{merged_lib}"]      = lib_adna
+            record[f"methods_agreement_lib__{merged_lib}"] = lib_agreement
 
         # Per-library Holi damage values (NaN for controls or libraries with no Holi match).
         for _, meta_row in metadata.iterrows():

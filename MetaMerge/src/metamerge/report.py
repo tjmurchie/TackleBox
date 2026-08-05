@@ -236,10 +236,14 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
     if subset.empty:
         return subset
 
-    count_cols   = [c for c in subset.columns if c.startswith("count__")]
-    support_cols = [c for c in subset.columns if c.startswith("aDNA_support_lib__")]
-    damage_cols  = [c for c in subset.columns if c.startswith("Holi_damage_lib__")]
-    id_cols = [c for c in subset.columns if c not in count_cols and c not in support_cols and c not in damage_cols]
+    count_cols     = [c for c in subset.columns if c.startswith("count__")]
+    support_cols   = [c for c in subset.columns if c.startswith("aDNA_support_lib__")]
+    damage_cols    = [c for c in subset.columns if c.startswith("Holi_damage_lib__")]
+    agreement_cols = [c for c in subset.columns if c.startswith("methods_agreement_lib__")]
+    id_cols = [
+        c for c in subset.columns
+        if c not in count_cols and c not in support_cols and c not in damage_cols and c not in agreement_cols
+    ]
 
     long = subset.melt(id_vars=id_cols, value_vars=count_cols, var_name="plot_library", value_name="count")
     long["merged_library_name"] = long["plot_library"].str.replace(r"^count__", "", regex=True)
@@ -275,6 +279,22 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
         )
     else:
         long["library_damage"] = pd.NA
+
+    if agreement_cols:
+        agr_long = subset[["scientific_name"] + agreement_cols].melt(
+            id_vars=["scientific_name"],
+            value_vars=agreement_cols,
+            var_name="_agr_col",
+            value_name="library_methods_agreement",
+        )
+        agr_long["merged_library_name"] = agr_long["_agr_col"].str.replace(r"^methods_agreement_lib__", "", regex=True)
+        long = long.merge(
+            agr_long[["scientific_name", "merged_library_name", "library_methods_agreement"]],
+            on=["scientific_name", "merged_library_name"],
+            how="left",
+        )
+    else:
+        long["library_methods_agreement"] = 0
 
     # carry all linker metadata columns forward
     meta_cols = [c for c in metadata.columns if c != "megan_library_name"]
@@ -313,12 +333,14 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
     fixed_cols = [
         c for c in long.columns
         if c not in {"plot_library", "count", "library_adna_support", "library_damage",
-                     "merged_library_name", "plot_library_label", "support_priority"}
+                     "library_methods_agreement", "merged_library_name", "plot_library_label",
+                     "support_priority"}
     ]
 
     rows = []
     for (sci, plot_sample_id, plot_group), group in long.groupby(["scientific_name", "plot_sample_id", "plot_group"], dropna=False):
         dmg_vals = pd.to_numeric(group["library_damage"], errors="coerce")
+        agr_vals = pd.to_numeric(group["library_methods_agreement"], errors="coerce")
         out = {
             "scientific_name": sci,
             "plot_sample_id": plot_sample_id,
@@ -326,6 +348,10 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
             "count": pd.to_numeric(group["count"], errors="coerce").fillna(0).sum(),
             "library_adna_support": _best_support(group["library_adna_support"]),
             "plot_damage": float(dmg_vals.max()) if dmg_vals.notna().any() else float("nan"),
+            # Max, not sum -- this is a per-cell agreement count (how many
+            # methods corroborate THIS taxon/library), not something to add
+            # across technical replicates of the same library.
+            "plot_methods_agreement": int(agr_vals.max()) if agr_vals.notna().any() else 0,
             "merged_library_name": plot_sample_id,
             "plot_library_label": _short_plot_label(plot_sample_id),
             "n_technical_libraries": n_tech_total.get(plot_sample_id, 1),
