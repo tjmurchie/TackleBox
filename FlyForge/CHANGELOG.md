@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- added FlyForge's first automated test suite (`tests/`, `pytest.ini`): tiling
+  window/step arithmetic including circular-genome wraparound, `compute_tm()`'s
+  behavior on normal and pathological input (documents that computation failures
+  silently return 0.0 rather than raising, which is indistinguishable downstream
+  from a genuinely low-Tm bait), and an end-to-end (real BLAST+/primer3, marked
+  `slow`) check that `design_opool()`'s final assembled oligo sequence has the
+  correct structure and that the probe sequence itself survives unmodified
+
 ## FlyForge v1.2.0 / FlyForgeAudit v1.2.0
 - added a third `opool` mode to FlyForgeAudit so an existing bare-bait FASTA can be converted directly into an order-ready oligo pool without redesigning the panel
 - `opool` writes a copied bait FASTA, the generated oligo-pool FASTA, amplification primers, probe QC table, recommendations, summary, and progress log
