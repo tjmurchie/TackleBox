@@ -45,7 +45,7 @@ import shlex
 import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Set, Optional
+from typing import List, Dict, Tuple, Set, Optional, Callable
 from hashlib import sha256
 from io import StringIO
 from itertools import combinations_with_replacement, permutations
@@ -512,11 +512,21 @@ def compute_bait_metrics(seq: str) -> Tuple[float, float, int]:
     return gc_frac, masked_frac, ambiguous
 
 
-def compute_tm(seq: str) -> float:
-    """Compute melting temperature using nearest-neighbor for RNA/DNA."""
+def compute_tm(seq: str, on_failure: Optional[Callable[[], None]] = None) -> float:
+    """Compute melting temperature using nearest-neighbor for RNA/DNA.
+
+    Returns 0.0 if the calculation fails (empty, all-ambiguous, or invalid-
+    character sequence) -- the same value a genuinely very-low-Tm bait would
+    have, so filter_melting_temp() excludes both identically either way.
+    ``on_failure``, when given, is called with no arguments exactly once per
+    failure so callers can count and report these separately instead of the
+    failure disappearing indistinguishably into the 0.0 value.
+    """
     try:
         return mt.Tm_NN(Seq(seq.upper()), nn_table=mt.R_DNA_NN1)
     except Exception:
+        if on_failure is not None:
+            on_failure()
         return 0.0
 
 
@@ -526,12 +536,17 @@ def compute_tm(seq: str) -> float:
 
 def tile_sequence(ref_id: str, seq: str, bait_len: int = 80,
                   tiling_density: float = 3.0, omit_short_leq: int = 70,
-                  pad_min: int = 71, circular: bool = False) -> List[Bait]:
+                  pad_min: int = 71, circular: bool = False,
+                  on_tm_failure: Optional[Callable[[], None]] = None) -> List[Bait]:
     """Generate tiled baits from a (softmasked) reference sequence.
 
     When ``circular`` is True, windows are allowed to wrap across the
     end/start boundary so circular genomes (for example mitochondria) do not
     lose enrichment at the linearized termini.
+
+    ``on_tm_failure``, when given, is forwarded to every ``compute_tm()``
+    call so a caller can count Tm-calculation failures across a whole run
+    (see ``compute_tm``'s docstring for why this matters).
     """
     baits: List[Bait] = []
     L = len(seq)
@@ -546,7 +561,7 @@ def tile_sequence(ref_id: str, seq: str, bait_len: int = 80,
             bait_id=bait_id, seq=padded, ref_id=ref_id,
             ref_start=1, ref_end=L, gc_frac=gc_frac,
             masked_frac=masked_frac, ambiguous_count=ambiguous,
-            tm=compute_tm(padded)))
+            tm=compute_tm(padded, on_failure=on_tm_failure)))
         return baits
 
     if L < bait_len:
@@ -574,7 +589,7 @@ def tile_sequence(ref_id: str, seq: str, bait_len: int = 80,
             bait_id=bait_id, seq=frag, ref_id=ref_id,
             ref_start=start + 1, ref_end=start + bait_len,
             gc_frac=gc_frac, masked_frac=masked_frac,
-            ambiguous_count=ambiguous, tm=compute_tm(frag)))
+            ambiguous_count=ambiguous, tm=compute_tm(frag, on_failure=on_tm_failure)))
     return baits
 
 
@@ -1744,12 +1759,19 @@ def run_pipeline(args):
     all_baits: List[Bait] = []
     ref_baits_after_tiling: Dict[str, List[Bait]] = {}
 
+    tm_failure_count = 0
+
+    def _count_tm_failure():
+        nonlocal tm_failure_count
+        tm_failure_count += 1
+
     for ref_id, seq in masked_seqs.items():
         baits = tile_sequence(
             ref_id, seq, bait_len=args.bait_length,
             tiling_density=used_tiling_density,
             omit_short_leq=args.omit_short_leq, pad_min=args.pad_min,
-            circular=(ref_id in circular_ids))
+            circular=(ref_id in circular_ids),
+            on_tm_failure=_count_tm_failure)
         all_baits.extend(baits)
         ref_baits_after_tiling[ref_id] = baits
         rs = ref_stats.get(ref_id)
@@ -1757,6 +1779,13 @@ def run_pipeline(args):
             rs.n_baits_tiled = len(baits)
             if len(seq) <= args.omit_short_leq:
                 rs.dropped_for_length = True
+
+    if tm_failure_count:
+        log(f"WARNING: Tm calculation failed for {tm_failure_count} bait(s) "
+            "(empty, all-ambiguous, or invalid-character sequence after "
+            "tiling). These were recorded as tm=0.0 and will be excluded by "
+            "the melting-temperature filter identically to a genuinely "
+            "low-Tm bait, not because their Tm was actually measured as low.")
 
     # Per-reference coverage from tiled baits
     if not args.no_coverage:
