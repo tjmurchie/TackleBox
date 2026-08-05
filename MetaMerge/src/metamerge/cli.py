@@ -55,9 +55,10 @@ from .classify import build_merge
 from .common_names import load_common_name_overrides
 from .config import load_config
 from .defaults import DEFAULT_CONFIG
-from .io import load_holi, load_megan_counts
+from .io import load_fillet, load_holi, load_megan_counts
 from .metadata import load_metadata
 from .report import write_plot_inputs
+from .utils import STATUS_ORDER
 from .workbook import write_workbook
 from . import linker as linker_mod
 
@@ -215,10 +216,7 @@ def _build_run_report(
 ) -> str:
     """Build the full text of the run-summary report."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    status_order = [
-        "Very high confidence", "High confidence", "Supported",
-        "Tentative", "Weak support", "Blank-associated",
-    ]
+    status_order = STATUS_ORDER
     status_counts = run_summary.get("status_counts", {})
 
     lines = [
@@ -231,6 +229,7 @@ def _build_run_report(
         _SEP2,
         f"  MEGAN count matrix : {counts_display}",
         f"  Holi/metaDMG CSV   : {args.holi}",
+        f"  Fillet evidence    : {getattr(args, 'fillet', None) or '(not supplied)'}",
         f"  Library linker     : {_get_linker_path(args)}",
         f"  Config             : {getattr(args, 'config', None) or 'defaults'}",
         f"  Common names       : {'online (NCBI → GBIF → iNat)' if getattr(args, 'online_common_names', False) else 'offline only'}",
@@ -278,7 +277,7 @@ def _build_run_report(
             lines.append("  … (showing first 20)")
 
     # Top confident taxa
-    for status in ["Very high confidence", "High confidence"]:
+    for status in ["Very high confidence (3-source corroborated)", "Very high confidence", "High confidence"]:
         top = merged_df[merged_df["aDNA_support_status"] == status].head(10)
         if not top.empty:
             lines += ["", f"TOP TAXA — {status.upper()}", _SEP2]
@@ -445,6 +444,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     common.add_argument("--holi", required=True, help="Path to the Holi/metaDMG CSV file used for per-library damage support.")
+    common.add_argument(
+        "--fillet",
+        help=(
+            "Optional path to Fillet's native MetaMerge evidence export "
+            "(fillet_metamerge_evidence.tsv, written by `fillet classify`/`fillet batch`). "
+            "When supplied, adds Fillet's own composite_authenticity/authenticity_tier and "
+            "eco/pal/fos ecological-support lines as a third independent evidence source, "
+            "producing a continuous ensemble_support_score and (when all 3 sources agree) "
+            "an upgraded 'Very high confidence (3-source corroborated)' status. The linker "
+            "file must have a fillet_library_name column when this is supplied. Currently "
+            "requires --megan-counts and --holi as well; a Holi+Fillet-only run with no "
+            "MEGAN counts is not yet supported."
+        ),
+    )
     common.add_argument(
         "--linker",
         help=(
@@ -671,6 +684,23 @@ def _apply_threshold_overrides(args, config: dict) -> None:
             config["thresholds"][key] = val
 
 
+def _load_fillet_if_requested(args, metadata: pd.DataFrame, config: dict) -> pd.DataFrame | None:
+    """Load Fillet's evidence table when --fillet was passed, after checking
+    the linker has a fillet_library_name column to match it against.
+    Returns None when --fillet was not supplied (the default, backward-
+    compatible 2-source run)."""
+    fillet_path = getattr(args, "fillet", None)
+    if not fillet_path:
+        return None
+    if "fillet_library_name" not in metadata.columns:
+        raise SystemExit(
+            "Error: --fillet was supplied but the linker file has no "
+            "fillet_library_name column. Add one (matching the 'sample' column "
+            "of your fillet_metamerge_evidence.tsv) before running."
+        )
+    return load_fillet(fillet_path, config)
+
+
 def command_check(args) -> None:
     """Validate inputs and print a pre-run summary (check sub-command)."""
     _banner()
@@ -691,6 +721,7 @@ def command_check(args) -> None:
         ------
           MEGAN counts : {counts_display}
           Holi CSV     : {args.holi}
+          Fillet       : {getattr(args, 'fillet', None) or '(not supplied)'}
           Linker       : {_get_linker_path(args)}
     """))
 
@@ -703,7 +734,10 @@ def command_check(args) -> None:
     metadata = load_metadata(_get_linker_path(args), config)
     megan    = load_megan_counts(counts_paths, metadata, config)
     holi     = load_holi(args.holi, config)
+    fillet   = _load_fillet_if_requested(args, metadata, config)
     print(f"  Loaded in {_fmt_seconds(time.time() - t0)}.")
+    if fillet is not None:
+        print(f"  Fillet evidence: {len(fillet)} rows, {fillet['sample'].nunique()} samples.")
 
     summary = summarize_inputs(megan, holi, metadata)
     print_input_summary(summary)
@@ -793,6 +827,7 @@ def command_run(args) -> None:
         ------
           MEGAN counts : {counts_display}
           Holi CSV     : {args.holi}
+          Fillet       : {getattr(args, 'fillet', None) or '(not supplied)'}
           Linker       : {_get_linker_path(args)}
           Config       : {args.config or 'built-in defaults'}
           Common names : {'online (NCBI → GBIF → iNat)' if args.online_common_names else 'offline only'}
@@ -841,6 +876,10 @@ def command_run(args) -> None:
     print("  Holi CSV    : loading…", end=" ", flush=True)
     holi = load_holi(args.holi, config)
     print(f"{len(holi):,} rows, {holi['sample'].nunique()} samples.")
+
+    fillet = _load_fillet_if_requested(args, metadata, config)
+    if fillet is not None:
+        print(f"  Fillet      : {len(fillet)} rows, {fillet['sample'].nunique()} samples.")
     print(f"  Done in {_fmt_seconds(time.time() - t0)}.")
 
     input_summary = summarize_inputs(megan, holi, metadata)
@@ -864,7 +903,8 @@ def command_run(args) -> None:
         print(f"  User overrides loaded: {len(common_overrides)} entries.")
 
     _section("Step 3 / 4  —  Merge and classify")
-    print(f"  Classifying {len(megan)} taxa across {len(metadata)} libraries…")
+    print(f"  Classifying {len(megan)} taxa across {len(metadata)} libraries"
+          f"{' (+ Fillet evidence)' if fillet is not None else ''}…")
     t0 = time.time()
     merged, run_summary = build_merge(
         metadata=metadata,
@@ -873,6 +913,7 @@ def command_run(args) -> None:
         config=config,
         common_name_overrides=common_overrides,
         cache_path=outdir / "common_name_cache.json",
+        fillet_df=fillet,
     )
     print(f"  Done in {_fmt_seconds(time.time() - t0)}.")
 

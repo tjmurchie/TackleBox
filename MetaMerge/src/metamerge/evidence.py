@@ -42,7 +42,78 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .classify import classify_status
+
+def classify_status(
+    exact_damage_support: bool,
+    exact_damage_support_ge100: bool,
+    strong_count_support: bool,
+    some_count_support: bool,
+    lineage_support: bool,
+    blank_associated: bool,
+    qc_label: str,
+    max_real_count: float,
+    thresholds: dict,
+) -> tuple[str, str]:
+    """Assign a DNA-support category and short basis summary (original,
+    untouched 2-source MEGAN+Holi cascade).
+
+    Applies the classification rules in priority order.  Blank-associated always
+    wins; Very high confidence requires the strictest combination of signals.
+
+    Args:
+        exact_damage_support: True if any real library has exact Holi damage+sig.
+        exact_damage_support_ge100: True if any supporting row has N_reads ≥ threshold.
+        strong_count_support: True if count evidence meets the strong-count thresholds.
+        some_count_support: True if at least one real library is positive.
+        lineage_support: True if any real library has lineage-consistent support.
+        blank_associated: True if blank evidence dominates.
+        qc_label: QC label from compute_qc_label ("clean", "caution",
+            "strong caution").
+        max_real_count: Maximum MEGAN count across all real libraries.
+        thresholds: The "thresholds" sub-dict from the MetaMerge config.
+
+    Returns:
+        Tuple of ``(status_string, basis_summary_string)``.
+    """
+    if blank_associated:
+        return "Blank-associated", "blank-associated"
+
+    if exact_damage_support_ge100 and strong_count_support and qc_label != "strong caution":
+        return (
+            "Very high confidence",
+            "exact damage-supported; strong counts; >=100 Holi reads",
+        )
+
+    if exact_damage_support and strong_count_support:
+        if qc_label == "clean":
+            return "High confidence", "exact damage-supported; strong counts"
+        return "High confidence", f"exact damage-supported; strong counts; {qc_label}"
+
+    if (
+        exact_damage_support
+        or strong_count_support
+        or (lineage_support and some_count_support)
+    ):
+        basis = []
+        if exact_damage_support:
+            basis.append("damage-supported (exact)")
+        if lineage_support:
+            basis.append("lineage-supported")
+        if strong_count_support:
+            basis.append("strong counts")
+        elif some_count_support:
+            basis.append("some counts")
+        if qc_label != "clean" and exact_damage_support:
+            basis.append(qc_label)
+        return "Supported", "; ".join(basis) if basis else "supported"
+
+    if max_real_count >= thresholds["tentative_min_reads"]:
+        return "Tentative", "weak/incomplete DNA support"
+
+    if max_real_count >= thresholds["weak_support_min_reads"]:
+        return "Weak support", "very weak DNA support"
+
+    return "Weak support", "no non-control support"
 
 
 @dataclass

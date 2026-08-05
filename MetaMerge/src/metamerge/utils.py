@@ -22,7 +22,12 @@ import pandas as pd
 
 
 # DNA-support status hierarchy, most supported → least supported.
+# "Very high confidence (3-source corroborated)" (evidence.classify_status_v2,
+# reachable only when MEGAN+Holi+Fillet all independently support AND agree on
+# a taxon) ranks above the original "Very high confidence", since it reflects
+# strictly stronger, 3-way-independent evidence.
 STATUS_ORDER = [
+    "Very high confidence (3-source corroborated)",
     "Very high confidence",
     "High confidence",
     "Supported",

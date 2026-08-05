@@ -15,6 +15,7 @@ changes, and obvious regressions quickly.
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from metamerge.classify import build_merge
 from metamerge.config import load_config
@@ -115,3 +116,52 @@ def test_smoke_output_columns():
     ]
     missing = [c for c in required_cols if c not in merged.columns]
     assert not missing, f"Missing expected columns: {missing}"
+
+
+def test_smoke_build_merge_with_fillet():
+    """Full merge pipeline with all 3 sources present (MEGAN+Holi+Fillet):
+    3-source corroboration should upgrade the status and produce a non-zero
+    ensemble_support_score, while the new fillet_* columns stay populated."""
+    cfg, metadata, megan, holi = _make_test_data()
+    metadata["fillet_library_name"] = ["A_fillet", "B_fillet", "BLK_fillet"]
+
+    fillet_df = pd.DataFrame(
+        {
+            "sample":                  ["A_fillet"],
+            "tax_id_str":              ["9696"],
+            "tax_name":                ["Puma"],
+            "tax_rank":                ["genus"],
+            "composite_authenticity":  [0.85],
+            "authenticity_tier":       [1],
+            "direct_hard_reads":       [200.0],
+            "eco_support":             [True],
+            "pal_support":             [False],
+            "fos_support":             [False],
+        }
+    )
+
+    merged, summary = build_merge(metadata, megan, holi, cfg, fillet_df=fillet_df)
+
+    assert len(merged) == 1
+    row = merged.iloc[0]
+    assert row["aDNA_support_status"] == "Very high confidence (3-source corroborated)"
+    assert bool(row["fillet_authenticated"]) is True
+    assert row["fillet_composite_authenticity"] == pytest.approx(0.85)
+    assert row["fillet_authenticity_tier"] == 1
+    assert bool(row["fillet_eco_support"]) is True
+    assert bool(row["fillet_holi_megan_discordant"]) is False
+    assert row["ensemble_support_score"] > 0.9
+
+
+def test_smoke_build_merge_fillet_none_unchanged():
+    """Passing fillet_df=None (the historical call) must leave the output
+    schema's fillet_* columns present but empty/NA, not raise or change
+    the non-Fillet columns."""
+    cfg, metadata, megan, holi = _make_test_data()
+    merged, _ = build_merge(metadata, megan, holi, cfg, fillet_df=None)
+
+    row = merged.iloc[0]
+    assert pd.isna(row["fillet_authenticated"])
+    assert pd.isna(row["fillet_composite_authenticity"])
+    assert pd.isna(row["fillet_holi_megan_discordant"])
+    assert row["ensemble_support_score"] >= 0.0

@@ -110,6 +110,12 @@ def _add_readme_sheet(wb: Workbook, run_info: dict, config: dict) -> None:
         ("Warnings — unmatched libraries/taxa and QC notes.", False),
         ("", False),
         ("DNA support categories (most to least supported)", True),
+        ("Very high confidence (3-source corroborated) — only reachable when Fillet "
+         "evidence was supplied (--fillet): MEGAN, Holi, and Fillet all independently "
+         "support the taxon, Fillet's own authentication is corroborated by an "
+         "independent eco/pal/fos ecological-support line, and none of the sources "
+         "disagree on the taxonomic call. See ensemble_support_score for a continuous "
+         "multi-method-agreement score alongside this discrete status.", False),
         ("Very high confidence — exact Holi/metaDMG damage support (damage > damage_min, "
          "significance > significance_min, N_reads >= high_confidence_n_reads_min) + strong "
          "MEGAN count support + no strong QC caution.", False),
@@ -213,12 +219,15 @@ def write_workbook(
     # ── Key_results sheet: most important columns for immediate review ────────
     _KEY_COLS_PRIORITY = [
         "scientific_name", "common_name", "tax_rank", "broad_group",
-        "aDNA_support_status", "support_basis_summary",
+        "aDNA_support_status", "support_basis_summary", "ensemble_support_score",
         "Holi_best_damage", "Holi_best_significance", "Holi_best_N_reads",
         "Holi_best_library",
         "Holi_exact_damage_sig_libraries_n", "Holi_exact_damage_sig_libraries",
         "megan_max_count", "megan_positive_libraries_n",
         "blank_ratio",
+        "fillet_authenticated", "fillet_composite_authenticity", "fillet_authenticity_tier",
+        "fillet_eco_support", "fillet_pal_support", "fillet_fos_support",
+        "fillet_holi_megan_discordant",
     ]
     count_cols       = [c for c in merged_df.columns if c.startswith("count__")]
     support_lib_cols = [c for c in merged_df.columns if c.startswith("aDNA_support_lib__")]

@@ -86,8 +86,9 @@ count_palette <- c(
 dark_bins <- c("100-499", "500-999", "1,000-4,999", ">=5,000")
 
 status_priority_map <- c(
-  "Very high confidence" = 0, "High confidence" = 1, "Supported" = 2,
-  "Tentative" = 3, "Weak support" = 4, "Blank-associated" = 5
+  "Very high confidence (3-source corroborated)" = 0,
+  "Very high confidence" = 1, "High confidence" = 2, "Supported" = 3,
+  "Tentative" = 4, "Weak support" = 5, "Blank-associated" = 6
 )
 tax_rank_order_map <- c(
   "family" = 0, "subfamily" = 1, "tribe" = 2, "subtribe" = 3,
