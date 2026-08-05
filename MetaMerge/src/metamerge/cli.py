@@ -154,19 +154,30 @@ def _fmt_seconds(seconds: float) -> str:
 # ─── Input summary ────────────────────────────────────────────────────────────
 
 def summarize_inputs(
-    megan_df: pd.DataFrame,
-    holi_df: pd.DataFrame,
+    megan_df: pd.DataFrame | None,
+    holi_df: pd.DataFrame | None,
     meta_df: pd.DataFrame,
 ) -> dict:
-    """Build a compact pre-run input summary dict."""
-    matched_megan = sum(col in megan_df.columns for col in meta_df["megan_library_name"])
+    """Build a compact pre-run input summary dict.
+
+    ``megan_df``/``holi_df`` are ``None`` for a Holi/Fillet-only run with no
+    MEGAN count matrix and/or no Holi/metaDMG CSV -- the corresponding
+    summary fields report 0/"(not supplied)" rather than erroring.
+    """
+    have_megan = megan_df is not None
+    have_holi  = holi_df is not None
     n_pos = int(meta_df["is_positive_control"].sum()) if "is_positive_control" in meta_df.columns else 0
+    if have_megan and "megan_library_name" in meta_df.columns:
+        matched_megan = sum(col in megan_df.columns for col in meta_df["megan_library_name"])
+        megan_libraries = int(meta_df["megan_library_name"].nunique())
+    else:
+        matched_megan, megan_libraries = 0, 0
     return {
-        "megan_taxa_rows":               int(len(megan_df)),
-        "holi_rows":                     int(len(holi_df)),
+        "megan_taxa_rows":               int(len(megan_df)) if have_megan else 0,
+        "holi_rows":                     int(len(holi_df)) if have_holi else 0,
         "metadata_rows":                 int(len(meta_df)),
-        "megan_libraries":               int(meta_df["megan_library_name"].nunique()),
-        "holi_libraries":                int(holi_df["sample"].nunique()),
+        "megan_libraries":               megan_libraries,
+        "holi_libraries":                int(holi_df["sample"].nunique()) if have_holi else 0,
         "negative_controls":             int(meta_df["is_negative_control"].sum()),
         "positive_controls":             n_pos,
         "matched_megan_library_columns": int(matched_megan),
@@ -344,25 +355,30 @@ def _threshold_help(key: str, default, meaning: str, when_to_change: str = "") -
     return msg
 
 
-def _has_validation_issues(summary: dict, metadata: pd.DataFrame, holi: pd.DataFrame) -> tuple[bool, list[str]]:
+def _has_validation_issues(summary: dict, metadata: pd.DataFrame, holi: pd.DataFrame | None) -> tuple[bool, list[str]]:
     issues: list[str] = []
+    # matched/total are both 0 for a run with no MEGAN count matrix supplied
+    # (summarize_inputs already guards this), so this check is a no-op then.
     matched = summary.get("matched_megan_library_columns", 0)
     total = summary.get("megan_libraries", 0)
     if matched != total:
         issues.append(
             f"Only {matched}/{total} linker libraries matched MEGAN columns. Check that linker megan_library_name values exactly match the MEGAN headers."
         )
-    if metadata["holi_library_name"].astype(str).str.startswith("REVIEW_NEEDED", na=False).any():
-        bad = metadata.loc[metadata["holi_library_name"].astype(str).str.startswith("REVIEW_NEEDED", na=False), "merged_library_name"].astype(str).tolist()
-        issues.append(
-            "Some linker rows still have REVIEW_NEEDED holi_library_name values: " + ", ".join(bad[:8]) + (" …" if len(bad) > 8 else "")
-        )
-    if metadata["holi_library_name"].astype(str).eq("UNKNOWN").any() or ("sample_id" in metadata.columns and metadata["sample_id"].astype(str).eq("UNKNOWN").any()):
+    if "holi_library_name" in metadata.columns:
+        if metadata["holi_library_name"].astype(str).str.startswith("REVIEW_NEEDED", na=False).any():
+            bad = metadata.loc[metadata["holi_library_name"].astype(str).str.startswith("REVIEW_NEEDED", na=False), "merged_library_name"].astype(str).tolist()
+            issues.append(
+                "Some linker rows still have REVIEW_NEEDED holi_library_name values: " + ", ".join(bad[:8]) + (" …" if len(bad) > 8 else "")
+            )
+        if metadata["holi_library_name"].astype(str).eq("UNKNOWN").any():
+            issues.append("Some linker rows still contain UNKNOWN holi_library_name values. Fill these in before running.")
+    if "sample_id" in metadata.columns and metadata["sample_id"].astype(str).eq("UNKNOWN").any():
         issues.append("Some linker rows still contain UNKNOWN sample identifiers. Fill these in before running.")
     return (len(issues) > 0, issues)
 
 
-def _handle_run_validation(summary: dict, metadata: pd.DataFrame, holi: pd.DataFrame, assume_yes: bool) -> None:
+def _handle_run_validation(summary: dict, metadata: pd.DataFrame, holi: pd.DataFrame | None, assume_yes: bool) -> None:
     print_input_summary(summary)
     has_issues, issues = _has_validation_issues(summary, metadata, holi)
     if not has_issues:
@@ -437,13 +453,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--megan-counts", required=True, nargs="+",
+        "--megan-counts", nargs="+",
         help=(
             "One or more MEGAN count-matrix files (.xlsx, .csv, or .tsv), or a single directory containing them. "
-            "When libraries are spread across multiple MEGAN runs, list all files here and MetaMerge will merge them on tax_id before classification."
+            "When libraries are spread across multiple MEGAN runs, list all files here and MetaMerge will merge them on tax_id before classification. "
+            "Optional -- omit for a Holi/Fillet-only run with no MEGAN count matrix at all (requires Holi to still be supplied via --holi)."
         ),
     )
-    common.add_argument("--holi", required=True, help="Path to the Holi/metaDMG CSV file used for per-library damage support.")
+    common.add_argument(
+        "--holi",
+        help=(
+            "Path to the Holi/metaDMG CSV file used for per-library damage support. "
+            "Required whenever --megan-counts is given (the MEGAN-anchored merge path always needs Holi); "
+            "optional for a Fillet-only run with no MEGAN and no Holi at all."
+        ),
+    )
     common.add_argument(
         "--fillet",
         help=(
@@ -453,9 +477,10 @@ def build_parser() -> argparse.ArgumentParser:
             "eco/pal/fos ecological-support lines as a third independent evidence source, "
             "producing a continuous ensemble_support_score and (when all 3 sources agree) "
             "an upgraded 'Very high confidence (3-source corroborated)' status. The linker "
-            "file must have a fillet_library_name column when this is supplied. Currently "
-            "requires --megan-counts and --holi as well; a Holi+Fillet-only run with no "
-            "MEGAN counts is not yet supported."
+            "file must have a fillet_library_name column when this is supplied. At least one "
+            "of --megan-counts/--holi/--fillet must be given; --megan-counts additionally "
+            "requires --holi (a real Holi+Fillet-only run with no MEGAN counts, or a "
+            "Fillet-only run with neither, are both supported by omitting --megan-counts)."
         ),
     )
     common.add_argument(
@@ -637,17 +662,18 @@ def run_heatmap_script(
 
 def build_warnings_df(
     metadata: pd.DataFrame,
-    megan_df: pd.DataFrame,
+    megan_df: pd.DataFrame | None,
     run_summary: dict,
 ) -> pd.DataFrame:
     """Collect run warnings and informational messages into a DataFrame."""
     warnings = []
-    for lib in metadata["megan_library_name"]:
-        if lib not in megan_df.columns:
-            warnings.append({
-                "level": "error",
-                "message": f"Linker library missing from MEGAN counts: {lib}",
-            })
+    if megan_df is not None and "megan_library_name" in metadata.columns:
+        for lib in metadata["megan_library_name"]:
+            if lib not in megan_df.columns:
+                warnings.append({
+                    "level": "error",
+                    "message": f"Linker library missing from MEGAN counts: {lib}",
+                })
     for taxon in run_summary.get("unmatched_taxa_examples", []):
         warnings.append({
             "level": "info",
@@ -684,6 +710,29 @@ def _apply_threshold_overrides(args, config: dict) -> None:
             config["thresholds"][key] = val
 
 
+def _validate_source_args(args) -> None:
+    """Check the source-file combination before doing any loading work.
+
+    At least one of --megan-counts/--holi/--fillet must be given, and
+    --megan-counts additionally requires --holi (the MEGAN-anchored merge
+    path always needs Holi; a Holi/Fillet-only run with no MEGAN count matrix
+    at all omits --megan-counts instead).
+    """
+    have_megan  = bool(getattr(args, "megan_counts", None))
+    have_holi   = bool(getattr(args, "holi", None))
+    have_fillet = bool(getattr(args, "fillet", None))
+    if not (have_megan or have_holi or have_fillet):
+        raise SystemExit(
+            "Error: at least one of --megan-counts, --holi, --fillet is required."
+        )
+    if have_megan and not have_holi:
+        raise SystemExit(
+            "Error: --megan-counts was given but --holi was not. The MEGAN-anchored "
+            "merge path always requires Holi. Omit --megan-counts entirely for a "
+            "Holi/Fillet-only run with no MEGAN count matrix."
+        )
+
+
 def _load_fillet_if_requested(args, metadata: pd.DataFrame, config: dict) -> pd.DataFrame | None:
     """Load Fillet's evidence table when --fillet was passed, after checking
     the linker has a fillet_library_name column to match it against.
@@ -704,23 +753,27 @@ def _load_fillet_if_requested(args, metadata: pd.DataFrame, config: dict) -> pd.
 def command_check(args) -> None:
     """Validate inputs and print a pre-run summary (check sub-command)."""
     _banner()
+    _validate_source_args(args)
 
-    counts_paths = _resolve_counts_paths(args.megan_counts)
+    have_megan = bool(getattr(args, "megan_counts", None))
+    have_holi  = bool(getattr(args, "holi", None))
+    counts_paths = _resolve_counts_paths(args.megan_counts) if have_megan else []
     counts_display = (
-        counts_paths[0] if len(counts_paths) == 1
+        "(not supplied)" if not have_megan
+        else counts_paths[0] if len(counts_paths) == 1
         else f"{len(counts_paths)} files ({Path(counts_paths[0]).parent})"
     )
     print(textwrap.dedent(f"""\
 
         Running:  metamerge check
-        Purpose:  Validate that your three input files align correctly before
+        Purpose:  Validate that your input files align correctly before
                   committing to a full merge run (which may take several minutes
                   on large metaDMG files).
 
         Inputs
         ------
           MEGAN counts : {counts_display}
-          Holi CSV     : {args.holi}
+          Holi CSV     : {args.holi or '(not supplied)'}
           Fillet       : {getattr(args, 'fillet', None) or '(not supplied)'}
           Linker       : {_get_linker_path(args)}
     """))
@@ -732,8 +785,8 @@ def command_check(args) -> None:
     _apply_threshold_overrides(args, config)
 
     metadata = load_metadata(_get_linker_path(args), config)
-    megan    = load_megan_counts(counts_paths, metadata, config)
-    holi     = load_holi(args.holi, config)
+    megan    = load_megan_counts(counts_paths, metadata, config) if have_megan else None
+    holi     = load_holi(args.holi, config) if have_holi else None
     fillet   = _load_fillet_if_requested(args, metadata, config)
     print(f"  Loaded in {_fmt_seconds(time.time() - t0)}.")
     if fillet is not None:
@@ -743,35 +796,46 @@ def command_check(args) -> None:
     print_input_summary(summary)
 
     # Warn about linker issues.
-    review_rows = metadata[
-        metadata["holi_library_name"].str.startswith("REVIEW_NEEDED", na=False)
-        | metadata["holi_library_name"].str.startswith("NO_HOLI_DATA", na=False)
-    ]
+    if "holi_library_name" in metadata.columns:
+        review_rows = metadata[
+            metadata["holi_library_name"].str.startswith("REVIEW_NEEDED", na=False)
+            | metadata["holi_library_name"].str.startswith("NO_HOLI_DATA", na=False)
+        ]
+        if not review_rows.empty:
+            print(
+                f"\n  WARNING: {len(review_rows)} linker row(s) have holi_library_name "
+                f"starting with REVIEW_NEEDED or NO_HOLI_DATA.\n"
+                f"  These libraries will have no Holi/metaDMG support in the merge.\n"
+                f"  Rows: {', '.join(review_rows['merged_library_name'].tolist()[:5])}"
+            )
     unknown_rows = metadata[metadata.get("sample_id", pd.Series(dtype=str)).eq("UNKNOWN")]
-
-    if not review_rows.empty:
-        print(
-            f"\n  WARNING: {len(review_rows)} linker row(s) have holi_library_name "
-            f"starting with REVIEW_NEEDED or NO_HOLI_DATA.\n"
-            f"  These libraries will have no Holi/metaDMG support in the merge.\n"
-            f"  Rows: {', '.join(review_rows['merged_library_name'].tolist()[:5])}"
-        )
     if not unknown_rows.empty:
         print(
             f"\n  WARNING: {len(unknown_rows)} linker row(s) have sample_id=UNKNOWN.\n"
             f"  Review and correct the linker file before running."
         )
 
-    _section("Validation result")
-    matched = summary["matched_megan_library_columns"]
-    total   = summary["megan_libraries"]
-    if matched == total:
-        print(f"  All {total} linker libraries found in the MEGAN count matrix.")
-    else:
-        print(
-            f"  WARNING: only {matched}/{total} linker libraries matched MEGAN columns.\n"
-            f"  Check that megan_library_name values match MEGAN column headers exactly."
-        )
+    if have_megan:
+        _section("Validation result")
+        matched = summary["matched_megan_library_columns"]
+        total   = summary["megan_libraries"]
+        if matched == total:
+            print(f"  All {total} linker libraries found in the MEGAN count matrix.")
+        else:
+            print(
+                f"  WARNING: only {matched}/{total} linker libraries matched MEGAN columns.\n"
+                f"  Check that megan_library_name values match MEGAN column headers exactly."
+            )
+
+    next_run_flags = []
+    if have_megan:
+        next_run_flags.append(f"--megan-counts {' '.join(args.megan_counts)}")
+    if have_holi:
+        next_run_flags.append(f"--holi         {args.holi}")
+    if getattr(args, "fillet", None):
+        next_run_flags.append(f"--fillet       {args.fillet}")
+    next_run_flags.append(f"--linker       {_get_linker_path(args)}")
+    next_run_cmd = " \\\n                 ".join(next_run_flags)
 
     print(textwrap.dedent(f"""
         Next steps
@@ -779,9 +843,7 @@ def command_check(args) -> None:
         1. If the summary above looks correct, run the full merge:
 
              metamerge run \\
-                 --megan-counts {" ".join(args.megan_counts)} \\
-                 --holi         {args.holi} \\
-                 --linker       {_get_linker_path(args)} \\
+                 {next_run_cmd} \\
                  --outdir       results/
 
         2. To enable online common-name lookups via GBIF (optional):
@@ -809,11 +871,16 @@ def command_check(args) -> None:
 def command_run(args) -> None:
     """Run the full MetaMerge workflow (run sub-command)."""
     _banner()
+    _validate_source_args(args)
+
+    have_megan = bool(getattr(args, "megan_counts", None))
+    have_holi  = bool(getattr(args, "holi", None))
 
     outdir       = Path(args.outdir)
-    counts_paths = _resolve_counts_paths(args.megan_counts)
+    counts_paths = _resolve_counts_paths(args.megan_counts) if have_megan else []
     counts_display = (
-        counts_paths[0] if len(counts_paths) == 1
+        "(not supplied)" if not have_megan
+        else counts_paths[0] if len(counts_paths) == 1
         else f"{len(counts_paths)} files ({Path(counts_paths[0]).parent})"
     )
     outdir.mkdir(parents=True, exist_ok=True)
@@ -826,7 +893,7 @@ def command_run(args) -> None:
         Inputs
         ------
           MEGAN counts : {counts_display}
-          Holi CSV     : {args.holi}
+          Holi CSV     : {args.holi or '(not supplied)'}
           Fillet       : {getattr(args, 'fillet', None) or '(not supplied)'}
           Linker       : {_get_linker_path(args)}
           Config       : {args.config or 'built-in defaults'}
@@ -869,13 +936,21 @@ def command_run(args) -> None:
     metadata = load_metadata(_get_linker_path(args), config)
     print(f"  Linker      : {len(metadata)} libraries loaded.")
 
-    print(f"  MEGAN counts: loading {len(counts_paths)} file(s)…", end=" ", flush=True)
-    megan = load_megan_counts(counts_paths, metadata, config)
-    print(f"{len(megan)} taxa.")
+    if have_megan:
+        print(f"  MEGAN counts: loading {len(counts_paths)} file(s)…", end=" ", flush=True)
+        megan = load_megan_counts(counts_paths, metadata, config)
+        print(f"{len(megan)} taxa.")
+    else:
+        megan = None
+        print("  MEGAN counts: (not supplied) -- taxon universe built from Holi/Fillet instead.")
 
-    print("  Holi CSV    : loading…", end=" ", flush=True)
-    holi = load_holi(args.holi, config)
-    print(f"{len(holi):,} rows, {holi['sample'].nunique()} samples.")
+    if have_holi:
+        print("  Holi CSV    : loading…", end=" ", flush=True)
+        holi = load_holi(args.holi, config)
+        print(f"{len(holi):,} rows, {holi['sample'].nunique()} samples.")
+    else:
+        holi = None
+        print("  Holi CSV    : (not supplied)")
 
     fillet = _load_fillet_if_requested(args, metadata, config)
     if fillet is not None:
@@ -903,7 +978,8 @@ def command_run(args) -> None:
         print(f"  User overrides loaded: {len(common_overrides)} entries.")
 
     _section("Step 3 / 4  —  Merge and classify")
-    print(f"  Classifying {len(megan)} taxa across {len(metadata)} libraries"
+    taxa_desc = f"{len(megan)} MEGAN taxa" if have_megan else "taxa (Holi/Fillet union, no MEGAN)"
+    print(f"  Classifying {taxa_desc} across {len(metadata)} libraries"
           f"{' (+ Fillet evidence)' if fillet is not None else ''}…")
     t0 = time.time()
     merged, run_summary = build_merge(
