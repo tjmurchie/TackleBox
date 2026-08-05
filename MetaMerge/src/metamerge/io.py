@@ -29,6 +29,19 @@ metaDMG CSV using ``usecols``, so even 1 GB+ files load without memory issues.
 
 Required metaDMG columns: sample, tax_id, tax_name, tax_rank, N_reads,
 N_alignments, damage, significance, rho_Ac, MAP_valid, tax_path.
+
+Fillet evidence table format
+------------------------------
+``load_fillet`` reads Fillet's own native MetaMerge export
+(``fillet_metamerge_evidence.tsv``, written by
+``fillet.report.write_fillet_metamerge_input``) -- a long table, one row per
+taxon per sample, carrying Fillet's aggregated authenticity assessment
+(composite_authenticity, authenticity_tier, confidence_tier) alongside the
+individual evidence dimensions worth reasoning about independently
+(damage, reference breadth/stacking, blank_fraction, eco/pal/fos support).
+Fillet is an independent classifier, not a second copy of Holi or MEGAN, so
+this is a genuinely separate input path, not a variant of load_holi/
+load_megan_counts.
 """
 
 from __future__ import annotations
@@ -162,6 +175,69 @@ def load_megan_counts(
     # Ensure library count columns are numeric (coerce errors to 0.0).
     for col in metadata["megan_library_name"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
+
+    return df
+
+
+def load_fillet(path: str, config: dict) -> pd.DataFrame:
+    """Load Fillet's native MetaMerge evidence table (fillet_metamerge_evidence.tsv,
+    written by fillet.report.write_fillet_metamerge_input).
+
+    Unlike load_holi() (which reads a large third-party metaDMG CSV and therefore
+    uses usecols for memory efficiency), Fillet's export is already a small,
+    purpose-built table -- read via the generic read_table() helper (tsv/csv/xlsx
+    auto-detected) rather than a hardcoded pd.read_csv, so it tolerates the same
+    format flexibility as the MEGAN/linker loaders.
+
+    Args:
+        path: Path to Fillet's exported evidence table.
+        config: MetaMerge config dict (provides fillet_required_columns).
+
+    Returns:
+        DataFrame with the required columns present, normalised and typed the
+        same way load_holi() normalises Holi's sample/tax_name/tax_rank/tax_id_str.
+
+    Raises:
+        ValueError: If any required column is absent from the file.
+    """
+    required = config["fillet_required_columns"]
+    df = read_table(Path(path))
+
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "Fillet MetaMerge export is missing required columns: "
+            + ", ".join(missing)
+            + ".  Required columns: " + ", ".join(required)
+        )
+
+    df["tax_name"]   = df["tax_name"].map(normalize_name)
+    df["tax_rank"]   = df["tax_rank"].map(normalize_rank)
+    df["tax_id_str"] = df["tax_id"].astype("string").str.strip()
+    df["sample"]     = df["sample"].astype(str).str.strip()
+
+    for col in ("eco_support", "pal_support", "fos_support"):
+        df[col] = df[col].map(
+            lambda v: str(v).strip().lower() in ("true", "1", "yes") if pd.notna(v) else False
+        )
+
+    numeric_cols = [
+        "direct_hard_reads", "direct_weighted_reads",
+        "cumulative_hard_reads", "cumulative_weighted_reads",
+        "composite_authenticity", "authenticity_tier",
+        "mean_damage_score", "max_damage_score", "terminus_ct_5p", "terminus_ga_3p",
+        "best_reference_breadth", "mean_reference_breadth",
+        "stack_concentration", "n_covered_windows", "coverage_gini",
+        "blank_fraction", "n_support_lines", "barcode_fraction", "mean_hit_uniqueness",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "confidence_tier" in df.columns:
+        df["confidence_tier"] = df["confidence_tier"].fillna("").astype(str)
+    if "flags" in df.columns:
+        df["flags"] = df["flags"].fillna("").astype(str)
 
     return df
 

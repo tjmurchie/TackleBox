@@ -98,8 +98,13 @@ DEFAULT_CONFIG = {
         ],
         "sample": ["sample", "library", "Sample"],
         # Library-linker columns (must appear in the metadata/linker CSV).
-        "megan_library_name": ["megan_library_name"],
-        "holi_library_name":  ["holi_library_name"],
+        # Exactly one of megan_library_name/holi_library_name/fillet_library_name
+        # is required per input source actually supplied to a run (see
+        # metadata.load_metadata's REQUIRED_METADATA_FIELDS docstring) --
+        # merged_library_name is the only column required unconditionally.
+        "megan_library_name":  ["megan_library_name"],
+        "holi_library_name":   ["holi_library_name"],
+        "fillet_library_name": ["fillet_library_name"],
         "merged_library_name": ["merged_library_name"],
         # Optional metadata columns carried through to the workbook.
         "sample_id":          ["sample_id"],
@@ -129,6 +134,29 @@ DEFAULT_CONFIG = {
         "tax_path",
     ],
 
+    # Columns MetaMerge loads from Fillet's native fillet_metamerge_evidence.tsv
+    # export (fillet.report.write_fillet_metamerge_input). tax_path is not part
+    # of Fillet's own export -- it is filled in from the Holi taxonomy lookup
+    # (or left blank) at merge time, same as MEGAN's tax_path is today.
+    "fillet_required_columns": [
+        "sample",
+        "tax_id",
+        "tax_name",
+        "tax_rank",
+        "direct_hard_reads",
+        "cumulative_hard_reads",
+        "composite_authenticity",
+        "authenticity_tier",
+        "confidence_tier",
+        "mean_damage_score",
+        "best_reference_breadth",
+        "stack_concentration",
+        "blank_fraction",
+        "eco_support",
+        "pal_support",
+        "fos_support",
+    ],
+
     "thresholds": {
         "damage_min":                       0.01,
         "significance_min":                 2.0,
@@ -145,6 +173,44 @@ DEFAULT_CONFIG = {
         "lineage_max_rank_level":           "family",
         "tentative_min_reads":              5,
         "weak_support_min_reads":           1,
+
+        # Fillet-evidence thresholds (independent of Holi/MEGAN's thresholds
+        # above -- Fillet supplies its own authentication assessment, not a
+        # second copy of Holi's damage/significance pair).
+        # Minimum composite_authenticity to count as "Fillet-authenticated."
+        "fillet_composite_min":             0.20,
+        # Minimum authenticity_tier (1=highest, 5=lowest, 0=rejected) to count
+        # as "Fillet-authenticated" -- a taxon must clear BOTH this and
+        # fillet_composite_min, matching Fillet's own continuous-score+discrete
+        # -tier "never collapse into one number" design.
+        "fillet_authenticity_tier_max":     3,
+        # Minimum Fillet direct_hard_reads for "Fillet strong count support"
+        # (Fillet's own analogue of MEGAN's strong_count_min_reads -- no
+        # multi-library requirement, since Fillet is typically run per sample
+        # rather than per-library-replicate the way MEGAN counts are pooled).
+        "fillet_strong_count_min_reads":    50,
+    },
+
+    # Weights for the continuous ensemble_support_score (0-1), reflecting how
+    # many independent methods corroborate a call and how strongly -- computed
+    # alongside (not instead of) the discrete aDNA_support_status categories.
+    # A method contributes its full weight only when its own evidence for this
+    # taxon clears that method's own support bar (exact damage support for
+    # Holi, strong count support for MEGAN, authenticated for Fillet); a
+    # discordant call (Fillet's own taxonomic anchor conflicts with MEGAN/
+    # Holi's beyond the lineage-support rank-cap) subtracts a penalty rather
+    # than just omitting that source's weight, since discordance is positive
+    # evidence of a problem, not merely an absence of corroboration.
+    "ensemble_score": {
+        "megan_weight":            0.30,
+        "holi_weight":             0.35,
+        "fillet_weight":           0.35,
+        "discordance_penalty":     0.40,
+        # Fillet's own eco/pal/fos support lines each add a small bonus,
+        # independent of fillet_weight above -- these are evidence lines
+        # Holi/MEGAN have no equivalent of at all, so they are not "double
+        # counting" part of fillet_weight's own damage/breadth signal.
+        "fillet_support_line_bonus": 0.05,
     },
 
     "lineage": {

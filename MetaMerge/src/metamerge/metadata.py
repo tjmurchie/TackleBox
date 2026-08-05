@@ -3,7 +3,8 @@
 The *library linker* (also called the metadata file) is what makes MetaMerge
 project-agnostic.  It tells the merge engine:
 
-  - Which MEGAN count-matrix column corresponds to which Holi/metaDMG sample.
+  - Which MEGAN count-matrix column, Holi/metaDMG sample, and/or Fillet sample
+    all correspond to the same underlying library.
   - Which libraries are negative controls.
   - Which libraries are positive controls.
   - What project metadata (site, context, group, etc.) to carry through to the
@@ -11,6 +12,16 @@ project-agnostic.  It tells the merge engine:
 
 Required columns in the linker file
 -------------------------------------
+merged_library_name
+    A human-readable, unique name used to label this library in workbook output
+    and heatmaps.  Must be unique within the linker file.  Required
+    unconditionally.
+
+At least one of the following three classifier crosswalk columns must also be
+present (matching whichever classifier input(s) a given run actually
+supplies -- a run can use any subset of the three, e.g. Holi+Fillet with no
+MEGAN at all):
+
 megan_library_name
     The *exact* column header used in the MEGAN count matrix.  This must match
     character-for-character, including the long file-path suffix that MEGAN
@@ -21,9 +32,10 @@ holi_library_name
     CSV.  One Holi sample may cover multiple MEGAN libraries (e.g., all
     extraction replicates of one biological sample are pooled on the Holi side).
 
-merged_library_name
-    A human-readable, unique name used to label this library in workbook output
-    and heatmaps.  Must be unique within the linker file.
+fillet_library_name
+    The sample name as it appears in the ``sample`` column of Fillet's own
+    MetaMerge export (fillet_metamerge_evidence.tsv). Like holi_library_name,
+    one Fillet sample may cover multiple MEGAN libraries.
 
 Recommended optional columns
 ------------------------------
@@ -85,7 +97,24 @@ import pandas as pd
 from .utils import find_first_matching_column, read_table, safe_bool
 
 
-# These three columns are the absolute minimum required in every linker file.
+# merged_library_name is required unconditionally -- it's the crosswalk key every
+# other column (counts, output tables) is keyed on regardless of which classifier
+# input sources are actually in use for a given run.
+ALWAYS_REQUIRED_METADATA_FIELDS = ["merged_library_name"]
+
+# Per-classifier crosswalk columns. Historically MetaMerge required exactly
+# megan_library_name + holi_library_name (a 2-source design). Since a real run
+# may now use any subset of {MEGAN, Holi, Fillet} -- e.g. Holi+Fillet with no
+# MEGAN at all -- at least ONE of these three must be present as a column, but
+# none of them individually is unconditionally required. A stricter,
+# source-specific check ("did the linker have a fillet_library_name column
+# when --fillet was actually passed on the CLI") happens at the CLI/build_merge
+# layer, which knows which sources a given run is actually using -- this
+# function only validates the linker file is well-formed in isolation.
+CLASSIFIER_LIBRARY_FIELDS = ["megan_library_name", "holi_library_name", "fillet_library_name"]
+
+# Kept for backward compatibility with any external code importing the old
+# name; reflects the pre-3-source-support field list.
 REQUIRED_METADATA_FIELDS = ["megan_library_name", "holi_library_name", "merged_library_name"]
 
 
@@ -104,12 +133,14 @@ def load_metadata(path: str, config: dict) -> pd.DataFrame:
         config: MetaMerge config dict (used for column aliases and sheet name).
 
     Returns:
-        Validated DataFrame with at minimum the three required columns plus
-        ``is_negative_control`` and ``sample_type``.
+        Validated DataFrame with at minimum ``merged_library_name`` plus
+        whichever of megan_library_name/holi_library_name/fillet_library_name
+        were present, plus ``is_negative_control`` and ``sample_type``.
 
     Raises:
-        ValueError: If required columns are missing or ``merged_library_name``
-            contains duplicates.
+        ValueError: If ``merged_library_name`` is missing, if none of the three
+            classifier crosswalk columns are present at all, or if
+            ``merged_library_name`` contains duplicates.
     """
     df = read_table(Path(path), sheet_name=config["io"].get("metadata_sheet"))
 
@@ -120,7 +151,7 @@ def load_metadata(path: str, config: dict) -> pd.DataFrame:
 
     # Build rename map from alias lists.
     rename = {}
-    for target in REQUIRED_METADATA_FIELDS + [
+    for target in ALWAYS_REQUIRED_METADATA_FIELDS + CLASSIFIER_LIBRARY_FIELDS + [
         "sample_id", "sample_type", "is_negative_control", "is_positive_control",
         "site", "age", "depth", "group", "notes",
     ]:
@@ -130,15 +161,27 @@ def load_metadata(path: str, config: dict) -> pd.DataFrame:
 
     df = df.rename(columns=rename).copy()
 
-    # Check required fields.
-    missing = [field for field in REQUIRED_METADATA_FIELDS if field not in df.columns]
+    # merged_library_name is required unconditionally.
+    missing = [field for field in ALWAYS_REQUIRED_METADATA_FIELDS if field not in df.columns]
     if missing:
         raise ValueError(
             "Metadata/linker file is missing required columns: "
             + ", ".join(missing)
             + ".  Required columns are: "
-            + ", ".join(REQUIRED_METADATA_FIELDS)
+            + ", ".join(ALWAYS_REQUIRED_METADATA_FIELDS)
             + ".  See docs/metadata_linker.md for the full linker specification."
+        )
+
+    # At least one classifier crosswalk column must be present -- a linker with
+    # none of megan_library_name/holi_library_name/fillet_library_name can't
+    # link anything to anything.
+    if not any(field in df.columns for field in CLASSIFIER_LIBRARY_FIELDS):
+        raise ValueError(
+            "Metadata/linker file has none of the classifier crosswalk columns: "
+            + ", ".join(CLASSIFIER_LIBRARY_FIELDS)
+            + ".  At least one is required (matching whichever classifier "
+            "input(s) this run actually uses).  See docs/metadata_linker.md "
+            "for the full linker specification."
         )
 
     # Ensure optional columns have defaults.
