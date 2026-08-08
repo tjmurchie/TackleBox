@@ -325,6 +325,38 @@ map_library_support <- function(x) {
   )
 }
 
+# Reverse lookup: priority number -> display label, restricted to the
+# per-library display vocabulary.
+lib_priority_to_label <- stats::setNames(
+  lib_support_levels, unname(status_priority_map[lib_support_levels])
+)
+
+# A single library's own raw evidence must never display MORE confidence
+# than MetaMerge's own official call for that taxon (aDNA_support_status in
+# the summary table) -- otherwise the heatmap and the summary file disagree
+# about the same taxon. This was the A51-LBL-1 Homo sapiens case: the
+# summary correctly says "Blank-associated" (multimapping-driven damage fit
+# overridden by blank overlap), but the per-library label only ever checked
+# that library's own raw damage-support flag, so the plot still rendered a
+# "High confidence" pentagon. Only caps the five "real sample" tiers --
+# "Blank-associated" is already the floor, and "Environmental-control" is a
+# different comparison category entirely, not part of the real-vs-blank
+# contrast the taxon status is built from, so neither should be capped.
+cap_library_support_by_taxon_status <- function(library_display, taxon_priority) {
+  library_display <- as.character(library_display)
+  lib_priority  <- unname(status_priority_map[library_display])
+  cappable      <- library_display %in%
+    c("Very high confidence", "High confidence", "Supported", "Tentative", "Weak support")
+  capped_priority <- ifelse(
+    cappable & !is.na(lib_priority) & !is.na(taxon_priority),
+    pmax(lib_priority, taxon_priority),
+    lib_priority
+  )
+  ifelse(cappable & !is.na(capped_priority),
+         unname(lib_priority_to_label[as.character(capped_priority)]),
+         library_display)
+}
+
 # Panel width: sized tightly to the longest text on the current page.
 panel_width <- function(x, min_width = 0.35, max_width = 3.0, char_scale = 0.055) {
   x <- x[!is.na(x) & nchar(as.character(x)) > 0]
@@ -556,8 +588,21 @@ make_heatmap <- function(dat, subset_name, out_file, top_n = 0, page_rows = 28) 
           vapply(as.character(count_bin), symbol_contrast_color, character(1))
         )
       ) %>%
-      left_join(label_df %>% select(taxon_key, row_id), by = "taxon_key") %>%
+      left_join(label_df %>% select(taxon_key, row_id, taxon_support_priority = support_priority),
+                by = "taxon_key") %>%
       mutate(
+        # Cap the per-library display tier at the taxon's own official
+        # aDNA_support_status (see cap_library_support_by_taxon_status()) --
+        # keeps the plot's confidence symbol consistent with the summary
+        # file's classification for the same taxon.
+        library_support_display = cap_library_support_by_taxon_status(
+          library_support_display, taxon_support_priority
+        ),
+        symbol_color = ifelse(
+          library_support_display == "Blank-associated",
+          "#CC0000",   # red for blank-associated — makes contamination signal visible
+          symbol_color
+        ),
         taxon_key               = factor(taxon_key,               levels = rev(y_levels)),
         plot_sample_id          = factor(plot_sample_id,          levels = x_levels),
         library_support_display = factor(library_support_display, levels = lib_support_levels),
