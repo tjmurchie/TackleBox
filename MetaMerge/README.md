@@ -4,7 +4,7 @@
   <img src="../assets/MetaMerge.png" alt="TackleBox: MetaMerge header" width="700">
 </p>
 
-# MetaMerge v1.2.0
+# MetaMerge v1.2.1
 
 **MetaMerge** is a command-line tool for ensemble ancient-DNA classification.
 It merges a conservative **BLASTn → MEGAN7** taxon count matrix with
