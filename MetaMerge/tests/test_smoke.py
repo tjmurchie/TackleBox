@@ -101,6 +101,41 @@ def test_smoke_blank_associated():
     assert merged.iloc[0]["aDNA_support_status"] == "Blank-associated"
 
 
+def test_smoke_blank_associated_not_overridden_by_strong_caution_multimapping():
+    """Regression test for the A51-LBL-1 Homo sapiens misclassification:
+    an exact-damage-support call built on a "strong caution" (heavily
+    multi-mapping) Holi fit must not be allowed to unconditionally override
+    a substantial blank overlap. Modeled directly on the real numbers:
+    N_reads=28012/N_alignments=1140245 (40.7 alignments/read, over double
+    qc_alignments_per_read_caution_max=20.0) and blank MEGAN count 12.8x the
+    real-sample count, with the blank's own Holi row deliberately kept below
+    the damage/significance thresholds so only the QC-label branch is
+    exercised (not the pre-existing blank_damage_support branch)."""
+    cfg, metadata, megan, holi = _make_test_data()
+
+    # Weak, single-library real MEGAN support (mirrors LBL-1: only 1 of 3
+    # libraries positive, 6 reads) and a blank count that dominates it.
+    megan["A"]   = 6.0
+    megan["B"]   = 0.0
+    megan["BLK"] = 77.0
+
+    # Real library's Holi row: clears damage/significance (exact_damage_support
+    # True) but is heavily multi-mapping -> qc_label "strong caution".
+    holi.loc[holi["sample"] == "A_holi", "damage"]       = 0.0201
+    holi.loc[holi["sample"] == "A_holi", "significance"] = 2.46
+    holi.loc[holi["sample"] == "A_holi", "N_reads"]      = 28012.0
+    holi.loc[holi["sample"] == "A_holi", "N_alignments"] = 1140245.0
+
+    # Blank's own Holi row stays below threshold -- isolates the new branch.
+    holi.loc[holi["sample"] == "blanks", "damage"]       = 0.011
+    holi.loc[holi["sample"] == "blanks", "significance"] = 1.21
+
+    merged, _ = build_merge(metadata, megan, holi, cfg)
+    row = merged.iloc[0]
+    assert row["Holi_best_multimapping_fit_qc"] == "strong caution"
+    assert row["aDNA_support_status"] == "Blank-associated"
+
+
 def test_smoke_output_columns():
     """Key output columns are present in the merged DataFrame."""
     cfg, metadata, megan, holi = _make_test_data()

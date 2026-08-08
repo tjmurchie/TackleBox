@@ -306,14 +306,6 @@ def build_merge(
             float(x.get("N_reads") or 0) >= thresholds["high_confidence_n_reads_min"]
             for x in exact_damage_supported_real
         )
-        blank_damage_support = len(exact_damage_supported_blank) > 0
-        blank_caution = (
-            max_blank_count >= thresholds["blank_absolute_min"]
-            or (max_real_count > 0 and max_blank_count / max_real_count >= thresholds["blank_relative_min"])
-        )
-        blank_associated = blank_damage_support or (
-            blank_caution and not strong_count_support and not exact_damage_support
-        )
 
         # Best real-library exact row (highest scoring across all real libs).
         best_exact = None
@@ -327,6 +319,39 @@ def build_merge(
                     float(x.get("damage") or -np.inf),
                 ),
             )
+
+        # QC label for the best exact row -- computed here (ahead of
+        # blank_associated below) because blank_associated now needs it: a
+        # "strong caution" multimapping fit must not be allowed to
+        # unconditionally override a substantial blank overlap.
+        if best_exact:
+            qc_label, align_ratio = compute_qc_label(
+                n_reads=best_exact.get("N_reads"),
+                n_alignments=best_exact.get("N_alignments"),
+                map_valid=bool(best_exact.get("MAP_valid")),
+                rho_ac=best_exact.get("rho_Ac"),
+                thresholds=thresholds,
+            )
+        else:
+            qc_label    = "not-applicable"
+            align_ratio = np.nan
+
+        blank_damage_support = len(exact_damage_supported_blank) > 0
+        blank_caution = (
+            max_blank_count >= thresholds["blank_absolute_min"]
+            or (max_real_count > 0 and max_blank_count / max_real_count >= thresholds["blank_relative_min"])
+        )
+        # An exact-damage-support call built on a "strong caution" multimapping
+        # fit (alignments/read far beyond the QC threshold) is not trustworthy
+        # enough to unconditionally override a substantial blank overlap on
+        # its own -- see A51-LBL-1 Homo sapiens (40.7 alignments/read, blank
+        # count 12.8x the real-sample count), which was misclassified
+        # "Supported" instead of "Blank-associated" for exactly this reason.
+        blank_associated = blank_damage_support or (
+            blank_caution and not strong_count_support and (
+                not exact_damage_support or qc_label == "strong caution"
+            )
+        )
 
         # ── Canonical taxon info from the Holi taxonomy lookup ───────────────
         focal_info = None
@@ -360,19 +385,6 @@ def build_merge(
                 lineage_support_examples.extend(examples)
 
         lineage_support = len(lineage_support_libraries) > 0
-
-        # ── QC label for the best exact row ──────────────────────────────────
-        if best_exact:
-            qc_label, align_ratio = compute_qc_label(
-                n_reads=best_exact.get("N_reads"),
-                n_alignments=best_exact.get("N_alignments"),
-                map_valid=bool(best_exact.get("MAP_valid")),
-                rho_ac=best_exact.get("rho_Ac"),
-                thresholds=thresholds,
-            )
-        else:
-            qc_label    = "not-applicable"
-            align_ratio = np.nan
 
         # ── Final classification ─────────────────────────────────────────────
         status, basis = classify_status(
