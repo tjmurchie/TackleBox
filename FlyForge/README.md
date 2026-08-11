@@ -73,6 +73,22 @@ pip install biopython primer3-py matplotlib seaborn pandas numpy tqdm
 chmod +x FlyForge.py FlyForge FlyForgeAudit.py FlyForgeAudit
 ```
 
+## Testing
+
+```bash
+pip install pytest
+cd FlyForge
+pytest              # fast tests (tiling math, Tm calculation) -- runs in ~1 second
+pytest -m slow       # also runs the real oligo-pool assembly test (requires blastn, ~1-4 minutes)
+```
+
+The fast suite covers the tiling window/step arithmetic (including circular-genome
+wraparound) and `compute_tm()`'s behavior on both normal and pathological input. The
+`slow` suite runs `design_opool()` end to end against real BLAST+/primer3 and verifies
+the literal oligo sequence structure that gets sent for synthesis
+(`5'-[T7 promoter][probe][primer reverse-complement]-3'`), including that the probe
+sequence itself survives unmodified in the final assembled oligo.
+
 ## Quick start
 
 ### Standard FlyForge design

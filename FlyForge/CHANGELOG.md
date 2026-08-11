@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+- `compute_tm()` Tm-calculation failures (empty, all-ambiguous, or invalid-
+  IUPAC-code sequence, e.g. a window that's entirely `R`/`Y`/`W`/etc. -- `N`
+  runs of 1-10 are already converted to `T` during preprocessing, so this
+  specifically affects longer ambiguity runs or other IUPAC codes) are now
+  counted across a run and reported as an explicit warning once tiling
+  finishes. Filtering behavior is unchanged (these baits are still excluded,
+  same as before) -- only visibility changed: previously a Tm-calculation
+  failure was indistinguishable from a genuinely low-Tm bait anywhere in the
+  output. `compute_tm()`/`tile_sequence()` gained an optional `on_failure`/
+  `on_tm_failure` callback parameter (backward compatible, defaults to `None`).
+- added FlyForge's first automated test suite (`tests/`, `pytest.ini`): tiling
+  window/step arithmetic including circular-genome wraparound, `compute_tm()`'s
+  behavior on normal and pathological input plus the new failure-visibility
+  callback, and an end-to-end (real BLAST+/primer3, marked
+  `slow`) check that `design_opool()`'s final assembled oligo sequence has the
+  correct structure and that the probe sequence itself survives unmodified
+
 ## FlyForge v1.2.0 / FlyForgeAudit v1.2.0
 - added a third `opool` mode to FlyForgeAudit so an existing bare-bait FASTA can be converted directly into an order-ready oligo pool without redesigning the panel
 - `opool` writes a copied bait FASTA, the generated oligo-pool FASTA, amplification primers, probe QC table, recommendations, summary, and progress log
