@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 from .adapters import find_adapter, is_terminal, load_adapters
 from .keywords import load_keywords
-from .regions import classify, guess_species, load_regions, load_species_kingdom, norm_kingdom
+from .regions import classify, guess_species, load_regions, load_species_kingdom
 from .seq_utils import IUPAC_DNA, entropy, gc_frac, max_hpoly, seq_hash
 from .utils import progress
 

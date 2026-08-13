@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 from pathlib import Path
 
 import pytest
 
-from spinner.config import DEFAULT_CONFIG
 from spinner.fasta import parse_fasta
 from spinner.pipeline import run_pipeline
 

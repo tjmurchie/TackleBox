@@ -44,7 +44,7 @@ import time
 import shlex
 import shutil
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set, Optional, Callable
 from hashlib import sha256
 from io import StringIO
@@ -62,7 +62,6 @@ from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
-from tqdm import tqdm
 
 __version__ = "1.2.0"
 
@@ -208,7 +207,7 @@ class ProgressTracker:
         lines = []
         lines.append("")
         lines.append("=" * 72)
-        lines.append(f"  TackleBox: FlyForge — Pipeline Progress")
+        lines.append("  TackleBox: FlyForge — Pipeline Progress")
         lines.append("=" * 72)
         lines.append(f"  {make_progress_bar(fraction, 50)}")
         lines.append(f"  Elapsed: {format_duration(elapsed)}  |  "
@@ -2119,7 +2118,7 @@ def run_pipeline(args):
         "  DESIGN PARAMETERS",
         f"    Bait length:             {args.bait_length} bp",
         f"    Tiling density:          {used_tiling_density:.2f}x  (step size: {max(1, int(round(args.bait_length / used_tiling_density)))} bp)",
-        f"    Min melting temp:        {args.min_tm} C" if args.min_tm > 0 else f"    Min melting temp:        off",
+        f"    Min melting temp:        {args.min_tm} C" if args.min_tm > 0 else "    Min melting temp:        off",
         f"    Circular tiling:         {'yes' if circular_ids else 'no'}" + (f" ({', '.join(sorted(circular_ids))})" if circular_ids else ""),
         f"    Complement removal:      {'yes' if args.remove_complements else 'no'}",
         f"    Self-repeat masking:     {'yes (k={}, threshold={})'.format(args.repeat_k, args.repeat_threshold) if not args.skip_self_mask else 'no (skipped)'}",

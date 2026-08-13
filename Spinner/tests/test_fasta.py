@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import gzip
-import textwrap
 from pathlib import Path
 
-import pytest
 
-from spinner.fasta import FastaRecord, parse_fasta, write_fasta
+from spinner.fasta import parse_fasta, write_fasta
 
 
 def write_tmp(tmp_path: Path, content: str) -> Path:

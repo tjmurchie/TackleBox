@@ -63,7 +63,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
@@ -747,7 +746,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             ]
         print_done("PBDB export complete", counts)
     elif args.verbose:
-        print(f"PBDB export complete.", file=sys.stderr)
+        print("PBDB export complete.", file=sys.stderr)
         print(f"  Occurrence records read: {len(all_records)}", file=sys.stderr)
         print(f"  Unique search taxa written: {len(rows)} -> {args.out}", file=sys.stderr)
         print(f"  Rejected/noisy names: {len(rejected)} -> {rejected_path}", file=sys.stderr)

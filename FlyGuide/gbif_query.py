@@ -873,7 +873,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     if args.verbose:
-        print(f"  Querying GBIF occurrence API...", file=sys.stderr)
+        print("  Querying GBIF occurrence API...", file=sys.stderr)
 
     # Check total occurrence count
     check = client.get("occurrence/search", {**query_params, "limit": 0})
@@ -929,7 +929,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ]
         print_done("GBIF query complete", counts)
     elif args.verbose:
-        print(f"\nGBIF query complete.", file=sys.stderr)
+        print("\nGBIF query complete.", file=sys.stderr)
         print(f"  GBIF occurrences matched : {total_occs:,}", file=sys.stderr)
         print(f"  Unique species written   : {len(rows):,} -> {args.out}", file=sys.stderr)
         print(f"  Names rejected/noisy     : {len(rejected):,} -> {rejected_path}", file=sys.stderr)

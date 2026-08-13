@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 RECENT_MAX = 5
 _BURNIN = 3  # updates before ETA is shown

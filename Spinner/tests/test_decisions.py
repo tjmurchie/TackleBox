@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 
-import pytest
 
 from spinner.annotation import Annotation, annotate
 from spinner.config import DEFAULT_CONFIG

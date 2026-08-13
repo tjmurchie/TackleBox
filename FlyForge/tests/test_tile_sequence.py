@@ -12,7 +12,6 @@ any regression protection before this suite.
 
 import random
 
-import pytest
 
 import FlyForge as ff
 

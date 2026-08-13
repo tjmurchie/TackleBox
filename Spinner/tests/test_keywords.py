@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-import pytest
 
 from spinner.config import DEFAULT_CONFIG
 from spinner.fasta import parse_fasta

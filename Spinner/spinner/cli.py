@@ -139,7 +139,7 @@ def _cmd_explain(args: argparse.Namespace) -> None:
         print(f"Class      : {row.get('marker_class')} / {row.get('region_id')}")
         print(f"Kingdom    : {row.get('kingdom')}")
         print(f"Species    : {row.get('species_guess')}")
-        print(f"Reasons    :")
+        print("Reasons    :")
         for r in reasons:
             print(f"  - {r}")
         print(f"Header     : {row.get('header')}")

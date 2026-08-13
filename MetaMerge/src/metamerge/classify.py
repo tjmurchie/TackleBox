@@ -51,7 +51,6 @@ Design principles
 
 from __future__ import annotations
 
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -59,7 +58,6 @@ from tqdm import tqdm
 
 from .common_names import (
     load_common_name_cache,
-    load_common_name_overrides,
     resolve_common_name,
     save_common_name_cache,
 )
@@ -72,7 +70,7 @@ from .holi import (
     row_has_exact_damage_support,
     summarize_lineage_support_for_taxon,
 )
-from .utils import normalize_name, normalize_rank, select_best_status
+from .utils import normalize_name, normalize_rank
 
 
 def classify_status(

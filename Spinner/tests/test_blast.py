@@ -9,7 +9,6 @@ import copy
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from spinner.annotation import Annotation
 from spinner.clustering import parse_uchimeout

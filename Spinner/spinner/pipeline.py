@@ -255,7 +255,7 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
     else:
         info("  1. Review decisions.tsv — no FASTAs were written (audit mode).")
         info("  2. Re-run with the 'filter' subcommand to produce keep/review/reject FASTAs:")
-        info(f"       ./Spinner filter [same args] --outprefix <prefix>")
+        info("       ./Spinner filter [same args] --outprefix <prefix>")
 
 
 def run_pipeline(args, filter_mode: bool) -> None:

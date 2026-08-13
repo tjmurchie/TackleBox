@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 
-import pytest
 
 from spinner.config import DEFAULT_CONFIG
 from spinner.regions import classify, guess_species, load_regions, load_species_kingdom, norm_kingdom

@@ -1,7 +1,6 @@
 """Terminal helpers: logging, progress bars, timing."""
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time

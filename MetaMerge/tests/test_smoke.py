@@ -12,7 +12,6 @@ specific unit tests.  Its purpose is to catch import errors, structural
 changes, and obvious regressions quickly.
 """
 
-from pathlib import Path
 
 import pandas as pd
 

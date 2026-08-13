@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import copy
 
-import pytest
 
 from spinner.annotation import Annotation
 from spinner.capping import cap_refs, rescue_sole_representatives
 from spinner.config import DEFAULT_CONFIG
-from spinner.decisions import score_decide
 
 
 def _make_mito(key: str, species: str = "Rangifer tarandus", score: int = 100) -> Annotation:

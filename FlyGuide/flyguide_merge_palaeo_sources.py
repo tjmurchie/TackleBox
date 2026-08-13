@@ -14,7 +14,6 @@ import csv
 import os
 import re
 import sys
-from collections import defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
 try:

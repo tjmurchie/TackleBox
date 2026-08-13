@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 
-import pytest
 
 from spinner.adapters import Adapter, find_adapter, hamming_leq, is_terminal, load_adapters
 from spinner.config import DEFAULT_CONFIG

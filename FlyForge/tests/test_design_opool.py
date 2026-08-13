@@ -24,7 +24,6 @@ would defeat the point of protecting the real assembled sequence.
 Run just these tests with: pytest -m slow tests/test_design_opool.py
 """
 
-import shutil
 
 import pytest
 from Bio import SeqIO

@@ -6,7 +6,6 @@ and once after capping (to incorporate cap_exceeded reasons).
 from __future__ import annotations
 
 import csv
-import dataclasses
 from typing import Dict
 
 from .annotation import Annotation

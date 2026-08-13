@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: >-
+  If you use TackleBox or any of its modules, please cite this repository and
+  note which module(s) and version(s) you used (each module's own --version
+  flag reports this). See each module's README for module-specific citation
+  notes (e.g. FlyForge's CARPDM oligo-pool citation, MetaMerge's
+  MEGAN7/metaDMG/Holi citations, Spinner's BLAST/MMseqs2 database notes).
+type: software
+title: TackleBox
+authors:
+  - given-names: Tyler
+    family-names: Murchie
+    email: tyler.murchie@hakai.org
+repository-code: "https://github.com/tjmurchie/TackleBox"
+license: AGPL-3.0-or-later
+keywords:
+  - ancient DNA
+  - aDNA
+  - palaeogenomics
+  - hybridization capture
+  - bait design
+  - reference database curation
+  - GBIF
+abstract: >-
+  TackleBox is a collection of scriptable modules for targeted palaeogenomic
+  research developed at the Hakai Institute: FlyForge (bait/probe design),
+  FlyGuide (region-specific NCBI reference panel construction from GBIF/
+  palaeo-database downloads), MetaMerge (ensemble aDNA classification),
+  and Spinner (reference sequence curation and QC).
