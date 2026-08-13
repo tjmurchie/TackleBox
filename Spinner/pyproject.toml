@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spinner"
+version = "1.2.0"
+description = "Reference sequence curation for ancient DNA -- audits, filters, and reports on NCBI/custom reference FASTA databases before bait design, mapping, BLAST databases, or metagenomic classifiers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0-or-later"}
+authors = [
+  {name = "Tyler Murchie"},
+]
+keywords = [
+  "ancient DNA", "aDNA", "reference database", "FASTA curation",
+  "bait design", "BLAST", "MEGAN", "Kraken", "Bracken",
+  "metagenomics", "TackleBox",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Repository = "https://github.com/tjmurchie/TackleBox"
+Issues     = "https://github.com/tjmurchie/TackleBox/issues"
+
+[project.scripts]
+spinner = "spinner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["spinner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
