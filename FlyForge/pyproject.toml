@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flyforge"
+version = "1.2.0"
+description = "Bait/probe designer for hybridization capture enrichment, with integrated support for in-house RNA bait synthesis from DNA oligo pools (CARPDM oligo-pool strategy)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0-or-later"}
+authors = [
+  {name = "Tyler Murchie"},
+]
+keywords = [
+  "ancient DNA", "aDNA", "hybridization capture", "bait design", "probe design",
+  "oligo pool", "CARPDM", "primer3", "BLAST", "TackleBox",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "matplotlib>=3.7",
+  "seaborn>=0.12",
+  "biopython>=1.81",
+  "primer3-py>=2.0",
+  "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Repository = "https://github.com/tjmurchie/TackleBox"
+Issues     = "https://github.com/tjmurchie/TackleBox/issues"
+
+[project.scripts]
+flyforge = "FlyForge:main"
+flyforge-audit = "FlyForgeAudit:main"
+
+[tool.setuptools]
+py-modules = ["FlyForge", "FlyForgeAudit"]
+
+# Test config lives in pytest.ini (already present, includes a "slow" marker for
+# tests that exercise real external tools) -- not duplicated here since pytest.ini
+# takes precedence over [tool.pytest.ini_options] when both exist.

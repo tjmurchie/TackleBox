@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flyguide"
+version = "1.3.0"
+description = "Builds region-specific NCBI nucleotide reference panels from GBIF/palaeo-database downloads (GBIF, Neotoma, PBDB, NOW), for metagenomic and sedimentary ancient DNA (sedaDNA) reference-panel construction."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0-or-later"}
+authors = [
+  {name = "Tyler Murchie"},
+]
+keywords = [
+  "ancient DNA", "aDNA", "sedaDNA", "GBIF", "Neotoma", "PBDB", "NOW",
+  "palaeoecology", "reference database", "NCBI", "TackleBox",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+# No third-party dependencies -- confirmed via source-import audit: every FlyGuide script
+# uses only the standard library (including urllib.request for GBIF/Neotoma/PBDB API calls,
+# not requests), matching gbif_query.py's own documented "no dependencies beyond the standard
+# library" design.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Repository = "https://github.com/tjmurchie/TackleBox"
+Issues     = "https://github.com/tjmurchie/TackleBox/issues"
+
+[project.scripts]
+gbif-query = "gbif_query:main"
+gbif-prep-from-csv = "gbif_prep_from_csv:main"
+neotoma-extinct-to-gbif = "neotoma_extinct_to_gbif:main"
+pbdb-to-gbif = "pbdb_to_gbif:main"
+now-to-gbif = "now_to_gbif:main"
+flyguide-merge-palaeo-sources = "flyguide_merge_palaeo_sources:main"
+flyguide-palaeo-sources = "flyguide_palaeo_sources:main"
+
+[tool.setuptools]
+py-modules = [
+  "gbif_query", "gbif_prep_from_csv", "neotoma_extinct_to_gbif", "pbdb_to_gbif",
+  "now_to_gbif", "flyguide_merge_palaeo_sources", "flyguide_palaeo_sources",
+  "_palaeo_tui",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
