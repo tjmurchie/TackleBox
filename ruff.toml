@@ -1,0 +1,24 @@
+# Shared ruff config for all TackleBox modules (FlyForge, FlyGuide, MetaMerge, Spinner).
+# One source of truth -- ruff auto-discovers this file when run from anywhere under
+# TackleBox/, so no per-module duplication is needed unless a module needs an override
+# (add a [tool.ruff] section to that module's own pyproject.toml to override this file
+# for just that module).
+#
+# Rule selection is deliberately focused on real-bug-catching, not style enforcement:
+#   E4/E7/E9 - pycodestyle subset (ruff's own default: syntax-adjacent issues)
+#   F        - pyflakes: unused imports, undefined names, unused variables -- the
+#              single highest-value check for catching mistakes in fast-moving/
+#              LLM-assisted edits
+#   B        - flake8-bugbear: common correctness gotchas (mutable default arguments,
+#              bare except, loop variables captured by closures, etc.)
+#
+# UP (pyupgrade) deliberately left OUT of the baseline: a test run against the current
+# codebase found it accounts for ~87% of all findings suite-wide (mostly typing.List ->
+# list, typing.Optional[X] -> X | None style modernization), which would drown out the
+# actual-bug signal from F/B above. Worth enabling later as its own deliberate
+# modernization pass, not bundled into day-to-day bug-catching.
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]
