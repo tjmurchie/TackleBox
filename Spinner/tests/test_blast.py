@@ -124,6 +124,40 @@ def test_parse_tax_blast_no_hits(tmp_path):
     assert "taxonomy_not_checked" in a.reasons
 
 
+def test_parse_tax_blast_missing_file_still_applies_not_checked_reason(tmp_path):
+    """Real bug, found 2026-08-28 via a live palaeoscope run at Holarctic-beetle scale:
+    when the taxonomy_blast subprocess itself fails to run at all (e.g. the mmseqs binary
+    is missing from PATH), pipeline.py has no real output file to point parse_tax_blast()
+    at. The old implementation `return`ed immediately when the path did not exist,
+    skipping the per-record loop entirely -- so NOT ONE record ever got the
+    "taxonomy_not_checked" reason, even though every one of them was genuinely never
+    checked. Since only the REASON string (not the `taxonomy_status` field) drives
+    review/reject scoring, this silently made a broken/missing tool MORE permissive than
+    either a working search or an explicitly-disabled one: the review-forcing safety net
+    that a length-exempted record already correctly gets (see
+    test_parse_tax_blast_no_hits above) vanished along with the tool. A missing file must
+    be treated identically to a genuinely-searched-but-empty result set."""
+    missing_path = str(tmp_path / "does_not_exist.taxonomy_blast.tsv")
+    assert not Path(missing_path).exists()
+    a = _ann("TEST.1", sp="Rangifer tarandus", gen="Rangifer")
+    ann = {"TEST.1": a}
+    parse_tax_blast(missing_path, ann, _cfg())
+    assert "taxonomy_not_checked" in a.reasons
+    assert a.taxonomy_status == "NOT_CHECKED"
+
+
+def test_parse_tax_blast_missing_file_does_not_crash_with_multiple_records(tmp_path):
+    """The missing-file path must scale to the real multi-record case, not just one."""
+    missing_path = str(tmp_path / "does_not_exist.taxonomy_blast.tsv")
+    ann = {
+        "A.1": _ann("A.1", sp="Rangifer tarandus", gen="Rangifer"),
+        "B.1": _ann("B.1", sp="Amara alpina", gen="Amara"),
+    }
+    parse_tax_blast(missing_path, ann, _cfg())
+    for a in ann.values():
+        assert "taxonomy_not_checked" in a.reasons
+
+
 def test_parse_tax_blast_only_first_hit_used(tmp_path):
     """Only the first valid hit per query should be used."""
     lines = [

@@ -163,6 +163,12 @@ def parse_tax_blast(
 
     Only the top hit per query (first line) is used for the taxonomy decision.
     Subsequent hits are ignored.
+
+    Safe to call even when *path* does not exist (e.g. the search subprocess failed to
+    run at all) -- every record is then treated exactly like a genuine "no hit found"
+    result (`taxonomy_not_checked`), the same review-forcing safety net a record
+    deliberately exempted by `max_query_length` already gets. This is deliberate: a
+    missing/broken search tool must never be silently MORE permissive than a working one.
     """
     tb = cfg.get("taxonomy_blast", {})
     min_qcov = float(tb.get("min_qcov", 50.0))
@@ -172,48 +178,65 @@ def parse_tax_blast(
     seen_top: set = set()  # record first hit per query
     hits: Dict[str, dict] = {}  # qid -> parsed hit dict
 
-    if not os.path.exists(path):
-        return
+    # Real bug, found 2026-08-28 via a live `palaeoscope run` at real Holarctic-beetle
+    # scale: this used to `return` immediately when *path* doesn't exist -- e.g. when the
+    # taxonomy_blast subprocess itself failed to run at all (the caller in pipeline.py
+    # catches that exception and warns, but never has a real output file to point at).
+    # Returning early skipped the per-record loop below ENTIRELY, meaning NO record ever
+    # got the "taxonomy_not_checked" REASON added (only the Annotation dataclass's own
+    # default `taxonomy_status="NOT_CHECKED"` field, which score_decide()/capping never
+    # actually look at -- only the REASON string matters for scoring). A missing/broken
+    # taxonomy tool therefore silently produced a MORE PERMISSIVE panel than either a
+    # working search or an explicitly-disabled one: the review-forcing safety net that
+    # normally applies to every genuinely-unverified record vanished along with the tool.
+    # Confirmed via a real accession: the same 16kb+ complete-genome record that correctly
+    # got `taxonomy_not_checked` (and was correctly barred from auto-KEEP by it) when the
+    # search ran but exempted it via `max_query_length` was MISSING that reason entirely,
+    # and reached KEEP, when the whole search silently failed to run due to a missing
+    # `mmseqs` binary. Fixed by reading the file only when it exists (leaving `hits` empty
+    # otherwise) so the per-record loop -- which already correctly treats "not present in
+    # `hits`" as `taxonomy_not_checked` for the exemption case -- runs unconditionally and
+    # applies the exact same review-forcing reason for the tool-failure case too.
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip().split("\t")
+                if len(parts) < 11:
+                    continue
+                qid, sacc, pid_s, length_s, qlen_s = parts[:5]
+                evalue_s, bits_s, stax_s, sciname = parts[7], parts[8], parts[9], parts[10]
 
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            parts = line.rstrip().split("\t")
-            if len(parts) < 11:
-                continue
-            qid, sacc, pid_s, length_s, qlen_s = parts[:5]
-            evalue_s, bits_s, stax_s, sciname = parts[7], parts[8], parts[9], parts[10]
+                if qid in seen_top:
+                    continue
+                try:
+                    pid = float(pid_s)
+                    length = int(length_s)
+                    qlen = int(qlen_s)
+                except ValueError:
+                    continue
 
-            if qid in seen_top:
-                continue
-            try:
-                pid = float(pid_s)
-                length = int(length_s)
-                qlen = int(qlen_s)
-            except ValueError:
-                continue
+                if pid < min_pid:
+                    continue
+                # MMSeqs2 translated search (search_type=2, nuc→protein) reports alnlen
+                # in amino-acid units while qlen is in nucleotides.  Multiply by 3 to
+                # convert so that min_qcov is applied on a consistent nt-equivalent scale.
+                search_type = int(tb.get("search_type", 1))
+                eff_len = length * 3 if search_type == 2 else length
+                qcov = eff_len / qlen * 100 if qlen else 0.0
+                if qcov < min_qcov:
+                    continue
 
-            if pid < min_pid:
-                continue
-            # MMSeqs2 translated search (search_type=2, nuc→protein) reports alnlen
-            # in amino-acid units while qlen is in nucleotides.  Multiply by 3 to
-            # convert so that min_qcov is applied on a consistent nt-equivalent scale.
-            search_type = int(tb.get("search_type", 1))
-            eff_len = length * 3 if search_type == 2 else length
-            qcov = eff_len / qlen * 100 if qlen else 0.0
-            if qcov < min_qcov:
-                continue
-
-            seen_top.add(qid)
-            hits[qid] = {
-                "sacc": sacc,
-                "pid": pid,
-                "length": length,
-                "qlen": qlen,
-                "evalue": evalue_s,
-                "bits": bits_s,
-                "staxids": stax_s,
-                "sciname": sciname.strip(),
-            }
+                seen_top.add(qid)
+                hits[qid] = {
+                    "sacc": sacc,
+                    "pid": pid,
+                    "length": length,
+                    "qlen": qlen,
+                    "evalue": evalue_s,
+                    "bits": bits_s,
+                    "staxids": stax_s,
+                    "sciname": sciname.strip(),
+                }
 
     for qid, a in ann.items():
         if qid not in hits:

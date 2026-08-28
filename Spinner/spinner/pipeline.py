@@ -534,166 +534,178 @@ def run_pipeline(args, filter_mode: bool) -> None:
                     if cfg["run"].get("fail_on_missing_external_tool", False):
                         raise
                     warn(f"Taxonomy search skipped/failed: {e}")
-            if os.path.exists(out_t):
+            # Always call parse_tax_blast(), even when out_t was never created (the
+            # subprocess itself failed to run -- see the `except Exception` above). Real
+            # bug, found 2026-08-28: this used to be gated on `os.path.exists(out_t)`, so a
+            # missing/broken taxonomy tool skipped annotation ENTIRELY rather than applying
+            # the same "taxonomy_not_checked" review-forcing reason a genuinely-searched-
+            # but-no-hit record gets -- silently making a broken tool MORE permissive than
+            # a working one. parse_tax_blast() itself now handles a missing file
+            # gracefully (every record falls through to "not checked"), so this call is
+            # always safe and always correct to make.
+            if not os.path.exists(out_t):
+                info("  No taxonomy_blast output available (search failed to run) --"
+                     " marking all candidates taxonomy_not_checked")
+            else:
                 info("  Parsing results and updating annotations ...")
-                parse_tax_blast(out_t, ann, cfg, taxdb)
-                tax_counts = Counter(a.taxonomy_status for a in ann.values())
-                for status, n in tax_counts.most_common():
-                    info(f"    {n:>7,}  {status}")
+            parse_tax_blast(out_t, ann, cfg, taxdb)
+            tax_counts = Counter(a.taxonomy_status for a in ann.values())
+            for status, n in tax_counts.most_common():
+                info(f"    {n:>7,}  {status}")
 
-                # --- Nucleotide-mode fallback for records with no ORF hit ---
-                # The primary search above is often a translated nuc->protein
-                # search (mmseqs2 search_type=2 against Swiss-Prot/NR), which
-                # structurally cannot match genuinely non-coding sequence
-                # (rRNA/tRNA genes, D-loop, introns, intergenic spacers) --
-                # there is no ORF to translate.  Opt-in via
-                # taxonomy_blast.nt_fallback_db; disabled ("") by default.
-                nt_fallback_db = cfg["taxonomy_blast"].get("nt_fallback_db", "")
-                if nt_fallback_db:
-                    not_checked_keys = {
-                        r.id for r in tax_records
-                        if "taxonomy_not_checked" in ann[r.id].reasons
-                    }
-                    if not_checked_keys:
-                        info(f"  NT fallback: {len(not_checked_keys):,} record(s) with no hit"
-                             f" from the primary search — re-checking via nucleotide BLAST")
-                        out_ntfb = outprefix + ".taxonomy_nt_fallback.tsv"
-                        ntfb_fasta = outprefix + ".tmp.nt_fallback.fasta"
-                        temp_files.append(ntfb_fasta)
-                        ntfb_already_done = (
-                            os.path.exists(out_ntfb) and os.path.getsize(out_ntfb) > 0
+            # --- Nucleotide-mode fallback for records with no ORF hit ---
+            # The primary search above is often a translated nuc->protein
+            # search (mmseqs2 search_type=2 against Swiss-Prot/NR), which
+            # structurally cannot match genuinely non-coding sequence
+            # (rRNA/tRNA genes, D-loop, introns, intergenic spacers) --
+            # there is no ORF to translate.  Opt-in via
+            # taxonomy_blast.nt_fallback_db; disabled ("") by default.
+            nt_fallback_db = cfg["taxonomy_blast"].get("nt_fallback_db", "")
+            if nt_fallback_db:
+                not_checked_keys = {
+                    r.id for r in tax_records
+                    if "taxonomy_not_checked" in ann[r.id].reasons
+                }
+                if not_checked_keys:
+                    info(f"  NT fallback: {len(not_checked_keys):,} record(s) with no hit"
+                         f" from the primary search — re-checking via nucleotide BLAST")
+                    out_ntfb = outprefix + ".taxonomy_nt_fallback.tsv"
+                    ntfb_fasta = outprefix + ".tmp.nt_fallback.fasta"
+                    temp_files.append(ntfb_fasta)
+                    ntfb_already_done = (
+                        os.path.exists(out_ntfb) and os.path.getsize(out_ntfb) > 0
+                    )
+                    if ntfb_already_done:
+                        info("  [resume] taxonomy_nt_fallback.tsv already exists — reusing")
+                    else:
+                        ntfb_records = [r for r in tax_records if r.id in not_checked_keys]
+                        write_keyed_fasta(ntfb_records, ntfb_fasta)
+                        ntfb_cfg = {
+                            "blast_task": "megablast",
+                            "max_target_seqs": cfg["taxonomy_blast"].get("max_target_seqs", 10),
+                            "evalue": cfg["taxonomy_blast"].get("evalue", "1e-10"),
+                            "num_threads": cfg["taxonomy_blast"].get("num_threads", 1),
+                            "outfmt": "6 qseqid saccver pident length qlen qstart qend"
+                                      " evalue bitscore staxids sscinames",
+                        }
+                        try:
+                            info(f"  Running NT fallback megablast against"
+                                 f" {len(ntfb_records):,} record(s): {nt_fallback_db}")
+                            with BlastTicker(
+                                f"Taxonomy NT fallback  ({len(ntfb_records):,} queries)",
+                                output_file=out_ntfb,
+                                total_queries=len(ntfb_records),
+                                avg_hsp=5.0,
+                            ):
+                                run_blast(ntfb_fasta, nt_fallback_db, out_ntfb, ntfb_cfg)
+                        except Exception as e:
+                            if cfg["run"].get("fail_on_missing_external_tool", False):
+                                raise
+                            warn(f"Taxonomy NT fallback search skipped/failed: {e}")
+                    if os.path.exists(out_ntfb):
+                        nt_resolved = parse_tax_blast_nt_fallback(
+                            out_ntfb, ann, cfg, not_checked_keys, taxdb
                         )
-                        if ntfb_already_done:
-                            info("  [resume] taxonomy_nt_fallback.tsv already exists — reusing")
+                        info(f"    NT fallback resolved: {nt_resolved:,} record(s)")
+
+            # --- Multi-database cross-kingdom escalation ---
+            # Sequences rejected as cross-kingdom by Swiss-Prot are re-checked
+            # against NR protein (level 1) and NT nucleotide (level 2).  Only
+            # the small subset that failed the fast database reaches the slow one.
+            if cfg["taxonomy_blast"].get("escalate_cross_kingdom", False):
+                cross_k_keys = {k for k, a in ann.items()
+                                if "taxonomy_cross_kingdom" in a.reasons}
+                if cross_k_keys:
+                    info(f"  Cross-kingdom escalation: {len(cross_k_keys):,} records to re-verify")
+                    esc_records = [r for r in screened_records if r.id in cross_k_keys]
+
+                    # Level 1 — NR protein (MMSeqs2)
+                    nr_db = cfg["taxonomy_blast"].get("nr_protein_db", "")
+                    if nr_db and esc_records:
+                        out_esc_nr = outprefix + ".escalation_nr.tsv"
+                        esc_nr_fasta = outprefix + ".tmp.esc_nr.fasta"
+                        temp_files.append(esc_nr_fasta)
+                        ck_esc_nr = out_esc_nr + ".mmseqs_batches"
+                        nr_already_done = (
+                            os.path.exists(out_esc_nr)
+                            and os.path.getsize(out_esc_nr) > 0
+                            and not os.path.exists(ck_esc_nr)
+                        )
+                        if nr_already_done:
+                            info("  [resume] escalation_nr.tsv already exists — reusing")
                         else:
-                            ntfb_records = [r for r in tax_records if r.id in not_checked_keys]
-                            write_keyed_fasta(ntfb_records, ntfb_fasta)
-                            ntfb_cfg = {
+                            write_keyed_fasta(esc_records, esc_nr_fasta)
+                            nr_cfg = dict(cfg["taxonomy_blast"])
+                            nr_cfg["blast_db"] = nr_db
+                            if cfg["taxonomy_blast"].get("nr_mmseqs_binary"):
+                                nr_cfg["mmseqs_binary"] = cfg["taxonomy_blast"]["nr_mmseqs_binary"]
+                            try:
+                                info(f"  Level 1 — NR protein ({len(esc_records):,} seqs): {nr_db}")
+                                esc_batch_info: list = [0, 0]
+                                with BlastTicker(
+                                    f"Escalation NR  ({len(esc_records):,} seqs)",
+                                    output_file=out_esc_nr,
+                                    total_queries=len(esc_records),
+                                    avg_hsp=5.0,
+                                ) as esc_ticker:
+                                    esc_ticker.batch_info = esc_batch_info
+                                    run_mmseqs(esc_nr_fasta, nr_db, out_esc_nr, nr_cfg,
+                                               batch_info=esc_batch_info)
+                            except Exception as e:
+                                warn(f"Escalation NR search failed: {e}")
+                        if os.path.exists(out_esc_nr):
+                            nr_rescued = parse_tax_blast_escalation(
+                                out_esc_nr, ann, cfg, taxdb, "nr_protein"
+                            )
+                            info(f"    NR protein rescued: {nr_rescued:,} records")
+
+                    # Level 2 — NT nucleotide BLAST (only remaining cross-kingdom)
+                    nt_db = cfg["taxonomy_blast"].get("nt_blast_db", "")
+                    still_cross_keys = {k for k, a in ann.items()
+                                        if "taxonomy_cross_kingdom" in a.reasons}
+                    nt_records = [r for r in screened_records
+                                  if r.id in still_cross_keys]
+                    if nt_db and nt_records:
+                        out_esc_nt = outprefix + ".escalation_nt.tsv"
+                        esc_nt_fasta = outprefix + ".tmp.esc_nt.fasta"
+                        temp_files.append(esc_nt_fasta)
+                        nt_already_done = (
+                            os.path.exists(out_esc_nt)
+                            and os.path.getsize(out_esc_nt) > 0
+                        )
+                        if nt_already_done:
+                            info("  [resume] escalation_nt.tsv already exists — reusing")
+                        else:
+                            write_keyed_fasta(nt_records, esc_nt_fasta)
+                            nt_cfg = {
                                 "blast_task": "megablast",
                                 "max_target_seqs": cfg["taxonomy_blast"].get("max_target_seqs", 10),
                                 "evalue": cfg["taxonomy_blast"].get("evalue", "1e-10"),
                                 "num_threads": cfg["taxonomy_blast"].get("num_threads", 1),
-                                "outfmt": "6 qseqid saccver pident length qlen qstart qend"
-                                          " evalue bitscore staxids sscinames",
+                                "outfmt": "6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids sscinames",
                             }
                             try:
-                                info(f"  Running NT fallback megablast against"
-                                     f" {len(ntfb_records):,} record(s): {nt_fallback_db}")
+                                info(f"  Level 2 — NT megablast ({len(nt_records):,} seqs): {nt_db}")
                                 with BlastTicker(
-                                    f"Taxonomy NT fallback  ({len(ntfb_records):,} queries)",
-                                    output_file=out_ntfb,
-                                    total_queries=len(ntfb_records),
+                                    f"Escalation NT  ({len(nt_records):,} seqs)",
+                                    output_file=out_esc_nt,
+                                    total_queries=len(nt_records),
                                     avg_hsp=5.0,
                                 ):
-                                    run_blast(ntfb_fasta, nt_fallback_db, out_ntfb, ntfb_cfg)
+                                    run_blast(esc_nt_fasta, nt_db, out_esc_nt, nt_cfg)
                             except Exception as e:
-                                if cfg["run"].get("fail_on_missing_external_tool", False):
-                                    raise
-                                warn(f"Taxonomy NT fallback search skipped/failed: {e}")
-                        if os.path.exists(out_ntfb):
-                            nt_resolved = parse_tax_blast_nt_fallback(
-                                out_ntfb, ann, cfg, not_checked_keys, taxdb
+                                warn(f"Escalation NT search failed: {e}")
+                        if os.path.exists(out_esc_nt):
+                            nt_rescued = parse_tax_blast_escalation(
+                                out_esc_nt, ann, cfg, taxdb, "nt_blast", nt_mode=True
                             )
-                            info(f"    NT fallback resolved: {nt_resolved:,} record(s)")
+                            info(f"    NT megablast rescued: {nt_rescued:,} records")
 
-                # --- Multi-database cross-kingdom escalation ---
-                # Sequences rejected as cross-kingdom by Swiss-Prot are re-checked
-                # against NR protein (level 1) and NT nucleotide (level 2).  Only
-                # the small subset that failed the fast database reaches the slow one.
-                if cfg["taxonomy_blast"].get("escalate_cross_kingdom", False):
-                    cross_k_keys = {k for k, a in ann.items()
-                                    if "taxonomy_cross_kingdom" in a.reasons}
-                    if cross_k_keys:
-                        info(f"  Cross-kingdom escalation: {len(cross_k_keys):,} records to re-verify")
-                        esc_records = [r for r in screened_records if r.id in cross_k_keys]
-
-                        # Level 1 — NR protein (MMSeqs2)
-                        nr_db = cfg["taxonomy_blast"].get("nr_protein_db", "")
-                        if nr_db and esc_records:
-                            out_esc_nr = outprefix + ".escalation_nr.tsv"
-                            esc_nr_fasta = outprefix + ".tmp.esc_nr.fasta"
-                            temp_files.append(esc_nr_fasta)
-                            ck_esc_nr = out_esc_nr + ".mmseqs_batches"
-                            nr_already_done = (
-                                os.path.exists(out_esc_nr)
-                                and os.path.getsize(out_esc_nr) > 0
-                                and not os.path.exists(ck_esc_nr)
-                            )
-                            if nr_already_done:
-                                info("  [resume] escalation_nr.tsv already exists — reusing")
-                            else:
-                                write_keyed_fasta(esc_records, esc_nr_fasta)
-                                nr_cfg = dict(cfg["taxonomy_blast"])
-                                nr_cfg["blast_db"] = nr_db
-                                if cfg["taxonomy_blast"].get("nr_mmseqs_binary"):
-                                    nr_cfg["mmseqs_binary"] = cfg["taxonomy_blast"]["nr_mmseqs_binary"]
-                                try:
-                                    info(f"  Level 1 — NR protein ({len(esc_records):,} seqs): {nr_db}")
-                                    esc_batch_info: list = [0, 0]
-                                    with BlastTicker(
-                                        f"Escalation NR  ({len(esc_records):,} seqs)",
-                                        output_file=out_esc_nr,
-                                        total_queries=len(esc_records),
-                                        avg_hsp=5.0,
-                                    ) as esc_ticker:
-                                        esc_ticker.batch_info = esc_batch_info
-                                        run_mmseqs(esc_nr_fasta, nr_db, out_esc_nr, nr_cfg,
-                                                   batch_info=esc_batch_info)
-                                except Exception as e:
-                                    warn(f"Escalation NR search failed: {e}")
-                            if os.path.exists(out_esc_nr):
-                                nr_rescued = parse_tax_blast_escalation(
-                                    out_esc_nr, ann, cfg, taxdb, "nr_protein"
-                                )
-                                info(f"    NR protein rescued: {nr_rescued:,} records")
-
-                        # Level 2 — NT nucleotide BLAST (only remaining cross-kingdom)
-                        nt_db = cfg["taxonomy_blast"].get("nt_blast_db", "")
-                        still_cross_keys = {k for k, a in ann.items()
-                                            if "taxonomy_cross_kingdom" in a.reasons}
-                        nt_records = [r for r in screened_records
-                                      if r.id in still_cross_keys]
-                        if nt_db and nt_records:
-                            out_esc_nt = outprefix + ".escalation_nt.tsv"
-                            esc_nt_fasta = outprefix + ".tmp.esc_nt.fasta"
-                            temp_files.append(esc_nt_fasta)
-                            nt_already_done = (
-                                os.path.exists(out_esc_nt)
-                                and os.path.getsize(out_esc_nt) > 0
-                            )
-                            if nt_already_done:
-                                info("  [resume] escalation_nt.tsv already exists — reusing")
-                            else:
-                                write_keyed_fasta(nt_records, esc_nt_fasta)
-                                nt_cfg = {
-                                    "blast_task": "megablast",
-                                    "max_target_seqs": cfg["taxonomy_blast"].get("max_target_seqs", 10),
-                                    "evalue": cfg["taxonomy_blast"].get("evalue", "1e-10"),
-                                    "num_threads": cfg["taxonomy_blast"].get("num_threads", 1),
-                                    "outfmt": "6 qseqid saccver pident length qlen qstart qend evalue bitscore staxids sscinames",
-                                }
-                                try:
-                                    info(f"  Level 2 — NT megablast ({len(nt_records):,} seqs): {nt_db}")
-                                    with BlastTicker(
-                                        f"Escalation NT  ({len(nt_records):,} seqs)",
-                                        output_file=out_esc_nt,
-                                        total_queries=len(nt_records),
-                                        avg_hsp=5.0,
-                                    ):
-                                        run_blast(esc_nt_fasta, nt_db, out_esc_nt, nt_cfg)
-                                except Exception as e:
-                                    warn(f"Escalation NT search failed: {e}")
-                            if os.path.exists(out_esc_nt):
-                                nt_rescued = parse_tax_blast_escalation(
-                                    out_esc_nt, ann, cfg, taxdb, "nt_blast", nt_mode=True
-                                )
-                                info(f"    NT megablast rescued: {nt_rescued:,} records")
-
-                        final_cross = sum(1 for a in ann.values()
-                                          if "taxonomy_cross_kingdom" in a.reasons)
-                        info(f"  Confirmed cross-kingdom after escalation: {final_cross:,}")
-                    else:
-                        info("  Cross-kingdom escalation: no rejections to re-verify")
+                    final_cross = sum(1 for a in ann.values()
+                                      if "taxonomy_cross_kingdom" in a.reasons)
+                    info(f"  Confirmed cross-kingdom after escalation: {final_cross:,}")
+                else:
+                    info("  Cross-kingdom escalation: no rejections to re-verify")
         else:
             warn("taxonomy_blast enabled but taxonomy_blast.blast_db not set — skipping")
 

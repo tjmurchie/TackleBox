@@ -1,5 +1,43 @@
 # Spinner Changelog
 
+## 2026-08-28 (a missing/broken taxonomy tool was silently MORE permissive than a working one)
+
+Found via a live PalaeoSCOPE run at real Holarctic-beetle scale (11 species, taxonomically
+much more diverse than earlier single-genus tests) whose `mmseqs` binary was missing from
+`PATH` in that specific run's environment: `taxonomy_blast.py::parse_tax_blast()` used to
+`return` immediately when its input file did not exist (e.g. because the search subprocess
+itself failed to run at all, caught and logged as a warning by `pipeline.py`) -- skipping
+its own per-record loop entirely, so **no record ever got the `"taxonomy_not_checked"`
+reason added**, even though every one of them was genuinely never checked. Since only that
+reason string (not the `taxonomy_status` field alone) drives review/reject scoring, a
+missing/broken taxonomy tool silently produced a **more permissive** panel than either a
+working search or an explicitly-disabled one -- the same review-forcing safety net a
+record deliberately exempted by `max_query_length` already correctly gets. Confirmed via a
+real accession: a genuine 16kb+ complete-genome record correctly got `taxonomy_not_checked`
+(and was correctly barred from auto-KEEP by it) when the search ran and exempted it by
+length, but was MISSING that reason entirely -- and reached KEEP -- when the whole search
+silently failed due to the missing binary.
+
+Fixed: `parse_tax_blast()` now reads the file only when it exists, leaving `hits` empty
+otherwise, so its own per-record loop (which already correctly treats "not present in
+`hits`" as `taxonomy_not_checked` for the length-exemption case) now runs unconditionally
+and applies the identical reason for the tool-failure case too. `pipeline.py`'s calling
+site now always calls `parse_tax_blast()` rather than gating it on the output file's
+existence, with a clearer log message ("No taxonomy_blast output available (search failed
+to run) -- marking all candidates taxonomy_not_checked") for the failure case.
+
+Verified against real data with a deliberately mmseqs-less `PATH` and a fresh output
+prefix (to rule out Spinner's own resume-cache reusing a prior successful run's output):
+all 151 real records in the Holarctic beetle test now correctly get `taxonomy_not_checked`
+when the tool is missing, and the resulting KEEP/REVIEW/REJECT tally (11/43/97) exactly
+matches the tally produced when `mmseqs` is genuinely present and running -- confirming the
+fix makes a broken environment behave conservatively (same outcome as a real, working
+check finding nothing conclusive) rather than silently more permissively (18 KEEP under the
+old, broken behavior).
+
+166 passed (was 164), ruff clean (24 pre-existing findings, unchanged, confirmed via git
+stash diff).
+
 ## 2026-08-27 (real-data curation bugfixes, found via PalaeoSCOPE's first live e2e run)
 
 Four real, confirmed bugs found via forensic analysis of real `curated_refs.decisions.tsv`
