@@ -104,6 +104,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "nt_blast_db": "",              # BLAST NT nucleotide DB path for level-2 escalation
         "escalation_nr_min_pident": 0.0,   # 0 = use min_pident; override for NR-specific threshold
         "escalation_nt_min_pident": 80.0,  # megablast-appropriate threshold for NT nucleotide check
+        # NT fallback: records left taxonomy_not_checked by the primary search (commonly
+        # non-coding sequence -- rRNA/tRNA genes, D-loop/control region, introns, intergenic
+        # spacers -- with no ORF for a protein/translated search to find) are re-checked with a
+        # real nucleotide (blastn/megablast) search against this DB.  "" = disabled (default;
+        # opt-in via config, e.g. taxonomy_blast.nt_fallback_db: /path/to/nt).
+        "nt_fallback_db": "",
+        "nt_fallback_min_pident": 80.0,   # megablast-appropriate threshold for NT fallback check
     },
     "windowed_blast": {
         "blast_db": "",
@@ -164,6 +171,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "chimera_detected",
             "fcs_adaptor_hit",
             "fcs_gx_contaminant",
+            # Only ever added by cap_refs() when capping.cap_action == "reject"
+            # (default is "review", which only adds the plain "cap_exceeded"
+            # review reason below).  See spinner/capping.py module docstring.
+            "cap_exceeded_reject",
         ],
         "review_reasons": [
             "adapter_terminal",
@@ -212,10 +223,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "adapter_trimmed_rescued": 5,   # small positive: sequence survived trimming and re-screen
         "taxonomy_rescued_nr_protein": 0,   # cleared cross-kingdom by NR protein
         "taxonomy_rescued_nt_blast": 0,     # cleared cross-kingdom by NT nucleotide
+        "taxonomy_checked_nt_fallback": 0,  # provenance marker only — real pass/fail reason scores separately
         "sole_representative": 10,
         "cluster_representative": 5,
         "cluster_nonrepresentative": -25,
         "cap_exceeded": -30,
+        "cap_exceeded_reject": -100,     # only added when capping.cap_action == "reject"
         "windowed_blast_conflict": -60,
         "fcs_adaptor_hit": -100,
         "fcs_adaptor_review": -40,

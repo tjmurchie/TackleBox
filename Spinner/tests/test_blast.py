@@ -13,7 +13,11 @@ from pathlib import Path
 from spinner.annotation import Annotation
 from spinner.clustering import parse_uchimeout
 from spinner.config import DEFAULT_CONFIG
-from spinner.taxonomy_blast import parse_tax_blast, parse_windowed_blast
+from spinner.taxonomy_blast import (
+    parse_tax_blast,
+    parse_tax_blast_nt_fallback,
+    parse_windowed_blast,
+)
 from spinner.vector_screen import parse_vector_blast
 
 
@@ -133,6 +137,137 @@ def test_parse_tax_blast_only_first_hit_used(tmp_path):
     ann = {"TEST.1": a}
     parse_tax_blast(path, ann, _cfg())
     assert a.taxonomy_status == "PASS_SPECIES"
+
+
+# ---------------------------------------------------------------------------
+# NT fallback taxonomy parser (regression: Bug C)
+#
+# Legacy non-coding marker sequences (rRNA/tRNA genes, D-loop, spacers) have
+# no ORF for the primary protein/translated search to find, so they are left
+# taxonomy_not_checked forever unless a real nucleotide-level check is run.
+# ---------------------------------------------------------------------------
+
+def test_nt_fallback_resolves_record_left_not_checked_by_primary_search(tmp_path):
+    """A record with no ORF hit from the primary search (still NOT_CHECKED)
+    gets a real taxonomy verdict from the nucleotide fallback search."""
+    a = _ann("Z54097.1", sp="Mammuthus primigenius", gen="Mammuthus", length=93)
+    a.add_reason("taxonomy_not_checked")  # left over from the primary protein-mode search
+    ann = {"Z54097.1": a}
+
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="Z54097.1", pident=99, length=90, qlen=93,
+        sciname="Mammuthus primigenius",
+    )]
+    path = write_tax_blast(tmp_path, lines)
+
+    resolved = parse_tax_blast_nt_fallback(path, ann, _cfg(), {"Z54097.1"})
+
+    assert resolved == 1
+    assert a.taxonomy_status == "PASS_SPECIES"
+    assert "taxonomy_same_species" in a.reasons
+    assert "taxonomy_checked_nt_fallback" in a.reasons
+    assert "taxonomy_not_checked" not in a.reasons
+
+
+def test_nt_fallback_leaves_record_not_checked_when_still_no_hit(tmp_path):
+    """A candidate with no hit even in the fallback search stays NOT_CHECKED."""
+    a = _ann("Z54097.1", sp="Mammuthus primigenius", gen="Mammuthus", length=93)
+    a.add_reason("taxonomy_not_checked")
+    ann = {"Z54097.1": a}
+
+    path = write_tax_blast(tmp_path, [])  # no hits at all
+
+    resolved = parse_tax_blast_nt_fallback(path, ann, _cfg(), {"Z54097.1"})
+
+    assert resolved == 0
+    assert "taxonomy_not_checked" in a.reasons
+    assert "taxonomy_checked_nt_fallback" not in a.reasons
+
+
+def test_nt_fallback_only_touches_candidate_keys(tmp_path):
+    """Records not in candidate_keys must be left completely untouched, even
+    if the fallback search output happens to contain a hit for them."""
+    candidate = _ann("CAND.1", sp="Mammuthus primigenius", gen="Mammuthus")
+    candidate.add_reason("taxonomy_not_checked")
+    other = _ann("OTHER.1", sp="Rangifer tarandus", gen="Rangifer")
+    other.add_reason("taxonomy_not_checked")
+    ann = {"CAND.1": candidate, "OTHER.1": other}
+
+    lines = [
+        BLAST_TAX_TEMPLATE.format(qid="CAND.1", pident=99, length=90, qlen=93,
+                                   sciname="Mammuthus primigenius"),
+        BLAST_TAX_TEMPLATE.format(qid="OTHER.1", pident=99, length=90, qlen=93,
+                                   sciname="Rangifer tarandus"),
+    ]
+    path = write_tax_blast(tmp_path, lines)
+
+    resolved = parse_tax_blast_nt_fallback(path, ann, _cfg(), {"CAND.1"})
+
+    assert resolved == 1
+    assert "taxonomy_not_checked" not in candidate.reasons
+    assert "taxonomy_not_checked" in other.reasons  # untouched — not a candidate
+
+
+def test_nt_fallback_below_min_pident_stays_not_checked(tmp_path):
+    a = _ann("Z54097.1", sp="Mammuthus primigenius", gen="Mammuthus", length=93)
+    a.add_reason("taxonomy_not_checked")
+    ann = {"Z54097.1": a}
+
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="Z54097.1", pident=60, length=90, qlen=93,  # below default 80% NT threshold
+        sciname="Mammuthus primigenius",
+    )]
+    path = write_tax_blast(tmp_path, lines)
+
+    resolved = parse_tax_blast_nt_fallback(path, ann, _cfg(), {"Z54097.1"})
+
+    assert resolved == 0
+    assert "taxonomy_not_checked" in a.reasons
+
+
+def test_nt_fallback_cross_kingdom_hit_still_rejected(tmp_path):
+    """Cross-kingdom classification logic must apply identically in the
+    fallback path (shared _apply_taxonomy_hit helper)."""
+    a = _ann("PLANT.1", sp="Salix arctica", gen="Salix", kingdom="Plant", length=200)
+    a.add_reason("taxonomy_not_checked")
+    ann = {"PLANT.1": a}
+
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="PLANT.1", pident=95, length=190, qlen=200,
+        sciname="Escherichia coli",
+    )]
+    # Swap in a bacterial staxid so the taxdump-based cross-kingdom check fires.
+    lines = [lines[0].replace("\t9615\t", "\t562\t")]
+    path = write_tax_blast(tmp_path, lines)
+
+    class _StubTaxdb:
+        def get_kingdom(self, staxid):
+            return "Bacteria"
+
+        def get_rank_name(self, staxid, rank):
+            return "Escherichia" if rank == "genus" else ""
+
+    resolved = parse_tax_blast_nt_fallback(path, ann, _cfg(), {"PLANT.1"}, taxdb=_StubTaxdb())
+
+    assert resolved == 1
+    assert a.taxonomy_status == "REJECT_CROSS_KINGDOM"
+    assert "taxonomy_cross_kingdom" in a.reasons
+    assert "taxonomy_checked_nt_fallback" in a.reasons
+
+
+def test_nt_fallback_disabled_by_default_in_config():
+    """taxonomy_blast.nt_fallback_db must default to "" (disabled) so this
+    new feature has zero effect on any existing config that doesn't opt in."""
+    assert DEFAULT_CONFIG["taxonomy_blast"]["nt_fallback_db"] == ""
+
+
+def test_nt_fallback_no_candidates_is_noop(tmp_path):
+    a = _ann("Z54097.1", sp="Mammuthus primigenius", gen="Mammuthus")
+    a.add_reason("taxonomy_not_checked")
+    ann = {"Z54097.1": a}
+    resolved = parse_tax_blast_nt_fallback(str(tmp_path / "missing.tsv"), ann, _cfg(), set())
+    assert resolved == 0
+    assert "taxonomy_not_checked" in a.reasons
 
 
 # ---------------------------------------------------------------------------

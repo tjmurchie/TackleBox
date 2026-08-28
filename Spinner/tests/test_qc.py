@@ -263,6 +263,60 @@ def test_complete_organelle_not_triggered(tmp_path):
     assert "complete_organelle" not in ann["MK123456.1"].reasons
 
 
+# Regression: Bug D — "complete_organelle" naive keyword match false-triggered
+# on records where only one small named sub-feature (not the whole record)
+# happened to be fully sequenced.  Real accession KM978952.1 is a 622 bp
+# partial nuclear ITS fragment (not even organelle DNA) that used to match
+# purely because "...5.8S ribosomal RNA gene and internal transcribed spacer
+# 2, complete sequence; ..." contains the bare substring "complete sequence".
+def test_complete_organelle_not_triggered_by_subfeature_complete_sequence(tmp_path):
+    header = (
+        ">KM978952.1 Salix arctica voucher SALIX002 internal transcribed "
+        "spacer 1, partial sequence; 5.8S ribosomal RNA gene and internal "
+        "transcribed spacer 2, complete sequence; and 28S ribosomal RNA "
+        "gene, partial sequence"
+    )
+    recs = parse_inline(header + "\n" + "ACGT" * 155 + "\n", tmp_path)
+    cfg = make_cfg()
+    ann = annotate(recs, cfg)
+    assert "complete_organelle" not in ann["KM978952.1"].reasons
+
+
+def test_complete_organelle_not_triggered_by_subfeature_complete_cds(tmp_path):
+    """Real accession pattern: a single gene's CDS is complete, but the
+    record as a whole (D-loop etc.) is explicitly partial elsewhere."""
+    header = (
+        ">FJ655900.1 Mammuthus primigenius tRNA-Glu gene, partial sequence; "
+        "cytochrome b (cytb) gene, complete cds; tRNA-Pro and tRNA-Thr "
+        "genes, complete sequence; and D-loop, partial sequence; mitochondrial"
+    )
+    recs = parse_inline(header + "\n" + "ACGT" * 155 + "\n", tmp_path)
+    cfg = make_cfg()
+    ann = annotate(recs, cfg)
+    assert "complete_organelle" not in ann["FJ655900.1"].reasons
+
+
+def test_complete_organelle_still_triggered_for_genuine_complete_genome(tmp_path):
+    """Real accession OR077933.1 -- a genuine complete mitogenome -- must
+    still correctly get 'complete_organelle'."""
+    header = ">OR077933.1 Mammuthus primigenius mitochondrion, complete genome"
+    recs = parse_inline(header + "\n" + "ACGT" * 4200 + "\n", tmp_path)
+    cfg = make_cfg()
+    ann = annotate(recs, cfg)
+    assert "complete_organelle" in ann["OR077933.1"].reasons
+
+
+def test_complete_organelle_triggered_for_complete_mitochondrial_genome_phrasing(tmp_path):
+    """A whole-genome header phrased as 'complete mitochondrial genome'
+    (organism-first convention) rather than 'mitochondrion, complete genome'
+    must still be recognised."""
+    header = ">NC_099999.1 Homo sapiens complete mitochondrial genome"
+    recs = parse_inline(header + "\n" + "ACGT" * 4200 + "\n", tmp_path)
+    cfg = make_cfg()
+    ann = annotate(recs, cfg)
+    assert "complete_organelle" in ann["NC_099999.1"].reasons
+
+
 # ---------------------------------------------------------------------------
 # All records present in decisions even with duplicates
 # ---------------------------------------------------------------------------

@@ -5,10 +5,26 @@ and decision_scores for ranking.  Records that exceed the cap get the
 cap_exceeded reason added; score_decide() is called again afterward to
 incorporate that reason into the final decision.
 
+Note on cap_action: cap_refs() sets a.decision directly, but that is purely
+advisory/for-immediate-inspection — the *authoritative* decision is always
+whatever the subsequent score_decide() call computes from cfg["decision_rules"]
+purely off of a.reasons (score_decide() never reads or preserves a pre-existing
+a.decision).  This means cap_action == "review" naturally has real, lasting
+effect (it only ever adds the soft "cap_exceeded" review reason).  But
+cap_action == "reject" would otherwise be silently thrown away by the next
+score_decide() call, because plain "cap_exceeded" is a *review* reason, not a
+hard-reject reason, in cfg["decision_rules"].  To make cap_action == "reject"
+actually reject, cap_refs() additionally adds the distinct "cap_exceeded_reject"
+reason (kept in cfg["decision_rules"]["hard_reject_reasons"]) so the following
+score_decide() call forces REJECT with no special-casing needed here.
+
 rescue_sole_representatives() runs after the final score_decide() and promotes
 the best available REVIEW record to KEEP for any species that would otherwise
 have zero KEEP records — critical for ancient DNA work where the only reference
-for a rare taxon may be imperfect.
+for a rare taxon may be imperfect.  Because a hard-capped-to-zero record now
+ends up with decision == "REJECT" (not "REVIEW") once cap_action == "reject",
+it is automatically excluded from rescue_sole_representatives()'s REVIEW-only
+candidate list — no separate cap-awareness is needed there.
 """
 from __future__ import annotations
 
@@ -58,6 +74,12 @@ def cap_refs(ann: Dict[str, Annotation], cfg: dict) -> None:
             if rank > cap:
                 a.add_reason("cap_exceeded")
                 if cap_action == "REJECT":
+                    # "cap_exceeded" alone is only a *review* reason in the
+                    # default decision_rules, so the score_decide() call that
+                    # runs right after cap_refs() would otherwise silently
+                    # undo this REJECT.  Add a distinct hard-reject reason so
+                    # cap_action: "reject" survives that recomputation.
+                    a.add_reason("cap_exceeded_reject")
                     a.decision = "REJECT"
                 elif a.decision == "KEEP":
                     a.decision = "REVIEW"

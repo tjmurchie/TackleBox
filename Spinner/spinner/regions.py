@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .utils import warn
 
@@ -83,12 +83,29 @@ def classify(header: str, rules: List[RegionRule], cfg: dict) -> Tuple[str, str]
     return default_class, "OTHER_BUILTIN"
 
 
-def guess_species(header: str) -> Tuple[str, str]:
+#: Matches a legacy NCBI-style abbreviated genus token smashed into a single
+#: word, e.g. ``M.primigenius`` (short for ``Mammuthus primigenius``).  When
+#: fields[1] itself looks like this, fields[2] is almost always an unrelated
+#: description word (e.g. "mitochondrial", "partial") rather than a genuine
+#: second species epithet, so it must not be used to fabricate a pseudo-species.
+_ABBREV_GENUS_RE = re.compile(r"^([A-Z])\.([a-z][\w-]*)$")
+
+
+def guess_species(
+    header: str, genus_abbrev_index: Optional[Dict[str, str]] = None
+) -> Tuple[str, str]:
     """Return (species, genus) guessed from an NCBI-style FASTA header.
 
     Recognises two common NCBI formats:
     - ``>ACCESSION Genus species ... [organism=...]``
     - ``>ACCESSION ... [Genus species ...]`` (taxonomy bracket at end)
+
+    *genus_abbrev_index*, when given, maps lower-cased ``"g.epithet"`` keys
+    (e.g. ``"m.primigenius"``) to a properly-cased known full genus name (e.g.
+    ``"Mammuthus"``).  It is used to resolve legacy abbreviated-genus headers
+    (``M.primigenius``) back to the real species instead of fabricating a
+    bogus pseudo-species out of the next, unrelated, description word.  See
+    :func:`build_genus_abbrev_index`.
     """
     h = header[1:] if header.startswith(">") else header
     fields = h.split()
@@ -98,6 +115,17 @@ def guess_species(header: str) -> Tuple[str, str]:
         and re.match(r"^[A-Z][\w.-]+$", fields[1])
         and re.match(r"^[a-z][\w.-]+", fields[2].strip(",;"))
     ):
+        m_abbrev = _ABBREV_GENUS_RE.match(fields[1])
+        if m_abbrev:
+            # fields[1] is itself an abbreviated "Genus.species" token (a
+            # common legacy NCBI header convention) -- fields[2] is NOT a
+            # real second epithet and must not be treated as one.
+            letter, epithet = m_abbrev.group(1), m_abbrev.group(2)
+            if genus_abbrev_index:
+                full_genus = genus_abbrev_index.get(f"{letter.lower()}.{epithet.lower()}")
+                if full_genus:
+                    return f"{full_genus} {epithet}", full_genus
+            return "", ""
         return f"{fields[1]} {fields[2].strip(',;')}", fields[1]
     # Format with taxonomy bracket at end: [Genus species]
     m = re.search(r"\[([A-Z][\w.-]+\s+[a-z][\w.-]+)[^\]]*\]\s*$", h)
@@ -105,6 +133,31 @@ def guess_species(header: str) -> Tuple[str, str]:
         sp = m.group(1)
         return sp, sp.split()[0]
     return "", ""
+
+
+def build_genus_abbrev_index(species_pairs) -> Dict[str, str]:
+    """Build a ``"g.epithet"`` -> properly-cased full genus lookup.
+
+    *species_pairs* is an iterable of (species, genus) tuples such as those
+    returned by :func:`guess_species` for headers that spelled the genus out
+    in full (e.g. ``("Mammuthus primigenius", "Mammuthus")``).  Used to
+    resolve legacy abbreviated-genus headers (``M.primigenius``) elsewhere in
+    the same input set back to their real genus.  The first genus seen for a
+    given abbreviation key wins.
+    """
+    index: Dict[str, str] = {}
+    for sp, genus in species_pairs:
+        if not sp or not genus or "." in genus:
+            continue  # skip empty guesses and already-abbreviated genera
+        parts = sp.split(None, 1)
+        if len(parts) != 2:
+            continue
+        epithet = parts[1].strip()
+        if not epithet:
+            continue
+        key = f"{genus[0].lower()}.{epithet.lower()}"
+        index.setdefault(key, genus)
+    return index
 
 
 def norm_kingdom(k: str) -> str:

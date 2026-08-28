@@ -7,6 +7,7 @@ import copy
 from spinner.annotation import Annotation
 from spinner.capping import cap_refs, rescue_sole_representatives
 from spinner.config import DEFAULT_CONFIG
+from spinner.decisions import score_decide
 
 
 def _make_mito(key: str, species: str = "Rangifer tarandus", score: int = 100) -> Annotation:
@@ -186,6 +187,105 @@ def test_rescue_disabled_when_explicitly_false():
     rescued = rescue_sole_representatives(ann, cfg)
     assert rescued == 0
     assert ann["R1"].decision == "REVIEW"
+
+
+# ---------------------------------------------------------------------------
+# cap_action "reject" vs "review" (regression: Bug B — cap_action dead code)
+#
+# Real accessions KM978952.1 (NucMark) and DQ860608.1 (Other) had
+# max_per_species_marker set to 0 for their class with cap_action: "reject"
+# (meant to hard-exclude those classes entirely), yet both ended up
+# decision=KEEP via cap_exceeded + sole_representative — because cap_refs()'s
+# direct a.decision = "REJECT" was silently thrown away by the very next
+# score_decide() call, which only knows about reasons, and plain
+# "cap_exceeded" is merely a *review* reason.
+# ---------------------------------------------------------------------------
+
+def _run_full_cap_sequence(ann, cfg):
+    """Mirror pipeline.py's real call order: score -> cap -> re-score -> rescue."""
+    score_decide(ann, cfg)
+    cap_refs(ann, cfg)
+    score_decide(ann, cfg)
+    rescue_sole_representatives(ann, cfg)
+
+
+def test_cap_action_reject_with_zero_cap_hard_rejects_and_is_never_rescued():
+    """cap_action='reject' + max_per_species_marker=0 must genuinely REJECT
+    and must never be promoted back to KEEP by rescue_sole_representatives(),
+    replicating the real KM978952.1 / DQ860608.1 scenario.
+    """
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["steps"]["cap_references"] = True
+    cfg["capping"]["max_per_species_marker"] = {
+        "Mito": 20, "Plastid": 20, "NucMark": 0, "Other": 0,
+    }
+    cfg["capping"]["cap_action"] = "reject"
+    cfg["capping"]["rescue_sole_representatives"] = True
+
+    a = Annotation(
+        accession="KM978952.1", record_key="KM978952.1", source_file="",
+        header=">KM978952.1 Salix arctica internal transcribed spacer 1, "
+               "5.8S ribosomal RNA gene",
+        length=622, seq_sha256="x",
+        species_guess="Salix arctica", genus_guess="Salix", kingdom="Plant",
+        marker_class="NucMark",
+    )
+    ann = {"KM978952.1": a}
+
+    _run_full_cap_sequence(ann, cfg)
+
+    assert a.decision == "REJECT"
+    assert "cap_exceeded" in a.reasons
+    assert "cap_exceeded_reject" in a.reasons
+    assert "sole_representative" not in a.reasons
+
+
+def test_cap_action_review_produces_identical_decisions_to_before_the_fix():
+    """cap_action='review' (the default used by every other real config) must
+    behave exactly as before: only the soft 'cap_exceeded' review reason is
+    added, KEEP is downgraded to REVIEW, and the new 'cap_exceeded_reject'
+    reason is never added — this is the critical no-regression guard for
+    every other real Spinner user.
+    """
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["steps"]["cap_references"] = True
+    cfg["capping"]["max_per_species_marker"] = {
+        "Mito": 1, "Plastid": 20, "NucMark": 10, "Other": 5,
+    }
+    cfg["capping"]["cap_action"] = "review"
+    cfg["capping"]["rescue_sole_representatives"] = False
+
+    recs = [_make_mito(f"R{i}") for i in range(3)]
+    ann = make_ann_dict(*recs)
+
+    _run_full_cap_sequence(ann, cfg)
+
+    exceeded = [a for a in ann.values() if "cap_exceeded" in a.reasons]
+    assert len(exceeded) == 2
+    for a in exceeded:
+        assert a.decision == "REVIEW"
+        assert "cap_exceeded_reject" not in a.reasons
+
+    kept = [a for a in ann.values() if a.decision == "KEEP"]
+    assert len(kept) == 1
+    assert "cap_exceeded" not in kept[0].reasons
+
+
+def test_cap_refs_adds_cap_exceeded_reject_only_for_reject_action():
+    """Unit-level: cap_refs() itself only ever adds cap_exceeded_reject when
+    cap_action == 'reject', never for the default 'review' action."""
+    cfg = _cfg(
+        max_per_species_marker={"Mito": 1, "Plastid": 20, "NucMark": 10, "Other": 5},
+        cap_action="reject",
+    )
+    recs = [_make_mito(f"R{i}") for i in range(3)]
+    ann = make_ann_dict(*recs)
+    cap_refs(ann, cfg)
+    exceeded = [a for a in ann.values() if "cap_exceeded" in a.reasons]
+    assert len(exceeded) == 2
+    for a in exceeded:
+        assert "cap_exceeded_reject" in a.reasons
+        assert a.decision == "REJECT"
 
 
 def test_rescue_independent_per_species():

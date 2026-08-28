@@ -220,68 +220,170 @@ def parse_tax_blast(
             # Query was not in BLAST output (no hits above thresholds).
             a.add_reason("taxonomy_not_checked")
             continue
+        _apply_taxonomy_hit(a, hits[qid], taxdb, reject_cross_kingdom)
 
-        h = hits[qid]
-        a.taxonomy_top_hit = h["sacc"]
-        a.taxonomy_top_name = h["sciname"]
-        a.taxonomy_top_pident = str(h["pid"])
-        a.taxonomy_top_length = str(h["length"])
-        a.taxonomy_top_staxids = h["staxids"]
 
-        hs = h["sciname"].lower()
-        sp = a.species_guess.lower()
-        gen = a.genus_guess.lower()
+# Map Spinner kingdom names to taxdump superkingdom/domain names.
+_KD_MAP = {
+    "Animal": "Eukaryota",
+    "Plant": "Eukaryota",
+    "Fungi": "Eukaryota",
+    "Protist": "Eukaryota",
+    "Bacteria": "Bacteria",
+    "Archaea": "Archaea",
+}
 
-        # --- taxdump-based comparison (preferred when available) ---
-        if taxdb and h["staxids"] and h["staxids"] != "N/A":
-            try:
-                staxid = int(h["staxids"].split(";")[0])
-                hit_kingdom = taxdb.get_kingdom(staxid)
-                hit_genus = taxdb.get_rank_name(staxid, "genus")
 
-                # Cross-kingdom check.
-                if reject_cross_kingdom and hit_kingdom and a.kingdom != "Unknown":
-                    expected_kd = a.kingdom
-                    # Map Spinner kingdom names to taxdump superkingdom names.
-                    kd_map = {
-                        "Animal": "Eukaryota",
-                        "Plant": "Eukaryota",
-                        "Fungi": "Eukaryota",
-                        "Protist": "Eukaryota",
-                        "Bacteria": "Bacteria",
-                        "Archaea": "Archaea",
-                    }
-                    expected_super = kd_map.get(expected_kd, "")
-                    # A cross-kingdom hit is one that does not share the same
-                    # superkingdom as the expected kingdom.
-                    if expected_super and hit_kingdom not in ("", expected_super):
-                        a.taxonomy_status = "REJECT_CROSS_KINGDOM"
-                        a.add_reason("taxonomy_cross_kingdom")
-                        continue
+def _apply_taxonomy_hit(
+    a: Annotation, h: dict, taxdb: Optional[TaxdumpDB], reject_cross_kingdom: bool
+) -> None:
+    """Record *h* as *a*'s top taxonomy hit and classify PASS/FAIL from it.
 
-                if gen and hit_genus.lower() == gen:
-                    a.taxonomy_status = "PASS_GENUS"
-                    a.add_reason("taxonomy_same_genus")
-                elif sp and sp in hs:
-                    a.taxonomy_status = "PASS_SPECIES"
-                    a.add_reason("taxonomy_same_species")
-                else:
-                    a.taxonomy_status = "NO_EXPECTED_MATCH"
-                    a.add_reason("taxonomy_no_expected_match")
+    Shared classification logic used by both :func:`parse_tax_blast` (primary
+    search, commonly protein/translated) and
+    :func:`parse_tax_blast_nt_fallback` (nucleotide fallback search for
+    records the primary search could not check at all), so both classify
+    hits identically.
+    """
+    a.taxonomy_top_hit = h["sacc"]
+    a.taxonomy_top_name = h["sciname"]
+    a.taxonomy_top_pident = str(h["pid"])
+    a.taxonomy_top_length = str(h["length"])
+    a.taxonomy_top_staxids = h["staxids"]
+
+    hs = h["sciname"].lower()
+    sp = a.species_guess.lower()
+    gen = a.genus_guess.lower()
+
+    # --- taxdump-based comparison (preferred when available) ---
+    if taxdb and h["staxids"] and h["staxids"] != "N/A":
+        try:
+            staxid = int(h["staxids"].split(";")[0])
+            hit_kingdom = taxdb.get_kingdom(staxid)
+            hit_genus = taxdb.get_rank_name(staxid, "genus")
+
+            # Cross-kingdom check.
+            if reject_cross_kingdom and hit_kingdom and a.kingdom != "Unknown":
+                expected_super = _KD_MAP.get(a.kingdom, "")
+                # A cross-kingdom hit is one that does not share the same
+                # superkingdom as the expected kingdom.
+                if expected_super and hit_kingdom not in ("", expected_super):
+                    a.taxonomy_status = "REJECT_CROSS_KINGDOM"
+                    a.add_reason("taxonomy_cross_kingdom")
+                    return
+
+            if gen and hit_genus.lower() == gen:
+                a.taxonomy_status = "PASS_GENUS"
+                a.add_reason("taxonomy_same_genus")
+            elif sp and sp in hs:
+                a.taxonomy_status = "PASS_SPECIES"
+                a.add_reason("taxonomy_same_species")
+            else:
+                a.taxonomy_status = "NO_EXPECTED_MATCH"
+                a.add_reason("taxonomy_no_expected_match")
+            return
+        except (ValueError, AttributeError):
+            pass  # fall through to string matching
+
+    # --- string-matching fallback ---
+    if sp and sp in hs:
+        a.taxonomy_status = "PASS_SPECIES"
+        a.add_reason("taxonomy_same_species")
+    elif gen and gen in hs:
+        a.taxonomy_status = "PASS_GENUS"
+        a.add_reason("taxonomy_same_genus")
+    else:
+        a.taxonomy_status = "NO_EXPECTED_MATCH"
+        a.add_reason("taxonomy_no_expected_match")
+
+
+# ---------------------------------------------------------------------------
+# Nucleotide-mode fallback for records the primary search couldn't check
+# ---------------------------------------------------------------------------
+
+def parse_tax_blast_nt_fallback(
+    path: str,
+    ann: Dict[str, Annotation],
+    cfg: dict,
+    candidate_keys,
+    taxdb: Optional[TaxdumpDB] = None,
+) -> int:
+    """Nucleotide-mode taxonomy check for records left NOT_CHECKED by the
+    primary search (only *candidate_keys* are considered/touched).
+
+    The primary taxonomy_blast search is often a translated nuc->protein
+    search (e.g. MMSeqs2 against Swiss-Prot/NR, ``search_type: 2``).  That
+    method structurally cannot produce a hit for genuinely non-coding
+    sequence -- rRNA genes, tRNA genes, D-loop/control region, introns,
+    intergenic spacers -- since there is no ORF to translate.  Such records
+    are left permanently ``taxonomy_not_checked`` even though a real
+    nucleotide (blastn/megablast) search against an NT-style database could
+    verify them directly.  This is the dominant real composition of legacy
+    GenBank deposits for under-sequenced species.
+
+    Only records in *candidate_keys* are touched.  Records resolved here get
+    the normal pass/fail reason (``taxonomy_same_species`` etc.) plus
+    ``taxonomy_checked_nt_fallback`` for provenance, and their
+    ``taxonomy_not_checked`` reason is removed.  Records not found in the
+    fallback search's output are left untouched (still NOT_CHECKED).
+
+    Returns the count of records resolved (no longer NOT_CHECKED).
+    """
+    tb = cfg.get("taxonomy_blast", {})
+    min_qcov = float(tb.get("min_qcov", 50.0))
+    min_pid = float(tb.get("nt_fallback_min_pident", 80.0))
+    reject_cross_kingdom = tb.get("reject_cross_kingdom", True)
+    candidate_keys = set(candidate_keys)
+
+    if not os.path.exists(path) or not candidate_keys:
+        return 0
+
+    seen_top: set = set()
+    hits: Dict[str, dict] = {}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip().split("\t")
+            if len(parts) < 11:
                 continue
-            except (ValueError, AttributeError):
-                pass  # fall through to string matching
+            qid, sacc, pid_s, length_s, qlen_s = parts[:5]
+            stax_s, sciname = parts[9], parts[10]
+            if qid not in candidate_keys or qid in seen_top:
+                continue
+            try:
+                pid = float(pid_s)
+                length = int(length_s)
+                qlen = int(qlen_s)
+            except ValueError:
+                continue
+            if pid < min_pid:
+                continue
+            # This is always a true nucleotide-nucleotide search (blastn/megablast),
+            # so alignment length is already in nt units -- no AA->nt conversion needed.
+            qcov = length / qlen * 100 if qlen else 0.0
+            if qcov < min_qcov:
+                continue
+            seen_top.add(qid)
+            hits[qid] = {
+                "sacc": sacc,
+                "pid": pid,
+                "length": length,
+                "qlen": qlen,
+                "staxids": stax_s,
+                "sciname": sciname.strip(),
+            }
 
-        # --- string-matching fallback ---
-        if sp and sp in hs:
-            a.taxonomy_status = "PASS_SPECIES"
-            a.add_reason("taxonomy_same_species")
-        elif gen and gen in hs:
-            a.taxonomy_status = "PASS_GENUS"
-            a.add_reason("taxonomy_same_genus")
-        else:
-            a.taxonomy_status = "NO_EXPECTED_MATCH"
-            a.add_reason("taxonomy_no_expected_match")
+    resolved = 0
+    for qid in candidate_keys:
+        a = ann.get(qid)
+        if a is None or qid not in hits:
+            continue
+        _apply_taxonomy_hit(a, hits[qid], taxdb, reject_cross_kingdom)
+        if "taxonomy_not_checked" in a.reasons:
+            a.reasons.remove("taxonomy_not_checked")
+        a.add_reason("taxonomy_checked_nt_fallback")
+        resolved += 1
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------

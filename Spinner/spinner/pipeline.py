@@ -40,6 +40,7 @@ from .taxonomy_blast import (
     make_windowed_fasta,
     parse_tax_blast,
     parse_tax_blast_escalation,
+    parse_tax_blast_nt_fallback,
     parse_windowed_blast,
 )
 from .utils import BlastTicker, fmt_seconds, info, section, stage, warn
@@ -539,6 +540,61 @@ def run_pipeline(args, filter_mode: bool) -> None:
                 tax_counts = Counter(a.taxonomy_status for a in ann.values())
                 for status, n in tax_counts.most_common():
                     info(f"    {n:>7,}  {status}")
+
+                # --- Nucleotide-mode fallback for records with no ORF hit ---
+                # The primary search above is often a translated nuc->protein
+                # search (mmseqs2 search_type=2 against Swiss-Prot/NR), which
+                # structurally cannot match genuinely non-coding sequence
+                # (rRNA/tRNA genes, D-loop, introns, intergenic spacers) --
+                # there is no ORF to translate.  Opt-in via
+                # taxonomy_blast.nt_fallback_db; disabled ("") by default.
+                nt_fallback_db = cfg["taxonomy_blast"].get("nt_fallback_db", "")
+                if nt_fallback_db:
+                    not_checked_keys = {
+                        r.id for r in tax_records
+                        if "taxonomy_not_checked" in ann[r.id].reasons
+                    }
+                    if not_checked_keys:
+                        info(f"  NT fallback: {len(not_checked_keys):,} record(s) with no hit"
+                             f" from the primary search — re-checking via nucleotide BLAST")
+                        out_ntfb = outprefix + ".taxonomy_nt_fallback.tsv"
+                        ntfb_fasta = outprefix + ".tmp.nt_fallback.fasta"
+                        temp_files.append(ntfb_fasta)
+                        ntfb_already_done = (
+                            os.path.exists(out_ntfb) and os.path.getsize(out_ntfb) > 0
+                        )
+                        if ntfb_already_done:
+                            info("  [resume] taxonomy_nt_fallback.tsv already exists — reusing")
+                        else:
+                            ntfb_records = [r for r in tax_records if r.id in not_checked_keys]
+                            write_keyed_fasta(ntfb_records, ntfb_fasta)
+                            ntfb_cfg = {
+                                "blast_task": "megablast",
+                                "max_target_seqs": cfg["taxonomy_blast"].get("max_target_seqs", 10),
+                                "evalue": cfg["taxonomy_blast"].get("evalue", "1e-10"),
+                                "num_threads": cfg["taxonomy_blast"].get("num_threads", 1),
+                                "outfmt": "6 qseqid saccver pident length qlen qstart qend"
+                                          " evalue bitscore staxids sscinames",
+                            }
+                            try:
+                                info(f"  Running NT fallback megablast against"
+                                     f" {len(ntfb_records):,} record(s): {nt_fallback_db}")
+                                with BlastTicker(
+                                    f"Taxonomy NT fallback  ({len(ntfb_records):,} queries)",
+                                    output_file=out_ntfb,
+                                    total_queries=len(ntfb_records),
+                                    avg_hsp=5.0,
+                                ):
+                                    run_blast(ntfb_fasta, nt_fallback_db, out_ntfb, ntfb_cfg)
+                            except Exception as e:
+                                if cfg["run"].get("fail_on_missing_external_tool", False):
+                                    raise
+                                warn(f"Taxonomy NT fallback search skipped/failed: {e}")
+                        if os.path.exists(out_ntfb):
+                            nt_resolved = parse_tax_blast_nt_fallback(
+                                out_ntfb, ann, cfg, not_checked_keys, taxdb
+                            )
+                            info(f"    NT fallback resolved: {nt_resolved:,} record(s)")
 
                 # --- Multi-database cross-kingdom escalation ---
                 # Sequences rejected as cross-kingdom by Swiss-Prot are re-checked

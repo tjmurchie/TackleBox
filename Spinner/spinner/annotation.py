@@ -14,7 +14,13 @@ from typing import Dict, List, Optional
 
 from .adapters import find_adapter, is_terminal, load_adapters
 from .keywords import load_keywords
-from .regions import classify, guess_species, load_regions, load_species_kingdom
+from .regions import (
+    build_genus_abbrev_index,
+    classify,
+    guess_species,
+    load_regions,
+    load_species_kingdom,
+)
 from .seq_utils import IUPAC_DNA, entropy, gc_frac, max_hpoly, seq_hash
 from .utils import progress
 
@@ -31,9 +37,26 @@ _VOUCHER_TERMS = (
 )
 
 # Header terms that indicate a complete organelle / genome assembly.
+#
+# Deliberately narrow: only phrases whose scope is unambiguously the whole
+# organelle genome / molecule.  Earlier versions also matched bare "complete
+# sequence", "complete cds", and "complete coding sequence" -- but GenBank
+# headers routinely use those exact phrases to describe ONE small, named
+# sub-feature (a single gene or spacer) within a record that is explicitly
+# partial everywhere else, e.g. real accession KM978952.1: "...internal
+# transcribed spacer 1, partial sequence; 5.8S ribosomal RNA gene and
+# internal transcribed spacer 2, complete sequence; and 28S ribosomal RNA
+# gene, partial sequence" -- a 622 bp partial nuclear rDNA fragment, not a
+# complete organelle genome, that only matched because ITS2 happens to be
+# fully sequenced.  Confirmed against real dataset headers: bare "complete
+# sequence"/"complete cds" is the sub-feature pattern in the overwhelming
+# majority of real cases (e.g. "...tRNA-Thr and tRNA-Pro genes, complete
+# sequence; and D-loop, partial sequence" -- record as a whole is partial).
 _COMPLETE_TERMS = (
-    "complete genome", "complete mitochondrial", "complete plastid",
-    "complete sequence", "complete cds", "complete coding sequence",
+    "complete genome",
+    "complete mitochondrial genome",
+    "complete plastid genome",
+    "complete chloroplast genome",
 )
 
 
@@ -137,6 +160,16 @@ def annotate(
     adapters = load_adapters(adapters_tsv or "")
     keywords = load_keywords(bad_keywords_tsv or "")
 
+    # Pre-pass: build a "g.epithet" -> full genus lookup from headers that
+    # spell the genus out in full, so headers using the legacy abbreviated
+    # "M.primigenius" convention can be resolved back to their real species
+    # (e.g. "Mammuthus primigenius") instead of guess_species() fabricating a
+    # bogus pseudo-species from an unrelated description word.  See
+    # spinner.regions.guess_species / build_genus_abbrev_index.
+    genus_abbrev_index = build_genus_abbrev_index(
+        guess_species(rec.header) for rec in records
+    )
+
     ann: Dict[str, Annotation] = {}
     seen_acc: set = set()
     seen_hash: dict = {}
@@ -148,7 +181,7 @@ def annotate(
         acc = rec.accession
 
         # --- taxonomy / kingdom ---
-        sp, gen = guess_species(rec.header)
+        sp, gen = guess_species(rec.header, genus_abbrev_index)
         kd = sp2k.get(sp.lower(), g2k.get(gen.lower(), "Unknown"))
 
         # --- marker classification ---

@@ -1,5 +1,57 @@
 # Spinner Changelog
 
+## 2026-08-27 (real-data curation bugfixes, found via PalaeoSCOPE's first live e2e run)
+
+Four real, confirmed bugs found via forensic analysis of real `curated_refs.decisions.tsv`
+output from an actual `bait_panel`-mode run against live NCBI data (not synthetic test
+fixtures) — the first real user of a couple of these code paths surfaced genuine, previously
+latent defects. 164 passed (was 142), ruff clean, zero regressions to any existing config's
+behavior.
+
+- **`guess_species()` (`regions.py`) fabricated a bogus pseudo-species from legacy
+  abbreviated-genus headers** (e.g. `"M.primigenius"`, short for `"Mammuthus primigenius"`,
+  smashed into one token) — it mistook the abbreviation for a genus and the next ordinary
+  description word (e.g. `"mitochondrial"`) for a species epithet, fabricating
+  `"M.primigenius mitochondrial"` as its own singleton species group. Since clustering/
+  capping group by `(species_guess, marker_class)`, this let a 93bp unverified fragment
+  bypass all real competition and get auto-promoted to KEEP via
+  `rescue_sole_representatives()`, ahead of 38+ genuine complete mitogenomes for the same
+  real species. Fixed via a new `build_genus_abbrev_index()` pre-pass (built from the same
+  input batch's own correctly-parsed full-genus headers) that `guess_species()` can now use
+  to resolve an abbreviated header back to its real species; degrades safely (no
+  fabrication) when no matching full-genus sibling exists in the batch.
+- **`capping.cap_action: "reject"` was dead code** (`capping.py`, `decisions.py`,
+  `config.py`) — `cap_refs()` set `a.decision = "REJECT"` for an over-cap record under
+  `cap_action: "reject"`, but the mandatory second `score_decide()` call immediately after
+  it unconditionally recomputes `a.decision` from `a.reasons` alone, discarding whatever
+  `cap_refs()` just set. Since `"cap_exceeded"` was only in `review_reasons`, not
+  `hard_reject_reasons`, `cap_action: "reject"` had *zero* real effect versus the default
+  `"review"` in every case — confirmed via two real accessions that should have been
+  impossible to KEEP under a `max_per_species_marker: 0` + `cap_action: reject` config, but
+  reached KEEP anyway via rescue. Fixed by having `cap_refs()` add a new, distinct
+  `"cap_exceeded_reject"` reason (kept alongside the existing generic `"cap_exceeded"`)
+  specifically under `cap_action: "REJECT"`, now listed in `decision_rules.hard_reject_reasons`
+  — every existing config uses `cap_action: "review"` and is completely unaffected
+  (regression-tested for byte-identical behavior).
+- **Legacy non-coding marker sequences (rRNA/tRNA/D-loop/introns/intergenic spacers) never
+  got taxonomically verified** — the only taxonomy check was a 6-frame-translated protein
+  search with no ORF to find in non-coding sequence, leaving the large majority of a
+  real legacy-marker-heavy dataset at `taxonomy_not_checked` by default. Fixed by wiring in
+  Spinner's own existing (but previously unused) nucleotide-mode search machinery: new
+  opt-in `taxonomy_blast.nt_fallback_db` config key (default `""`, fully inert unless
+  explicitly set) re-runs records left `taxonomy_not_checked` by the primary search through
+  a real nucleotide megablast. The intentional `max_query_length` skip of full organelle
+  genomes from taxonomy checking (documented in bundled configs as "full organelles don't
+  need kingdom verification") is untouched by this change.
+- **`"complete_organelle"` reason false-triggered on partial records** (`annotation.py`) —
+  `_COMPLETE_TERMS` included the bare phrases `"complete sequence"`/`"complete cds"`/
+  `"complete coding sequence"`, which GenBank headers routinely use to describe ONE small
+  named sub-feature (a single gene or spacer) within a record that is explicitly partial
+  everywhere else. Tightened to 4 unambiguous whole-genome-scale phrases (`"complete
+  genome"`, `"complete mitochondrial genome"`, `"complete plastid genome"`, `"complete
+  chloroplast genome"`) — calibrated against a real 718-record dataset, where 181 of 229
+  old-term matches were confirmed real false positives from sub-feature phrasing.
+
 ## v0.7.0 (2026-05-05)
 
 Ancient DNA first — Spinner's default config is now calibrated for aDNA
