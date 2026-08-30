@@ -14,6 +14,7 @@ from spinner.annotation import Annotation
 from spinner.clustering import parse_uchimeout
 from spinner.config import DEFAULT_CONFIG
 from spinner.taxonomy_blast import (
+    mark_length_exempt_records,
     parse_tax_blast,
     parse_tax_blast_nt_fallback,
     parse_windowed_blast,
@@ -134,9 +135,12 @@ def test_parse_tax_blast_missing_file_still_applies_not_checked_reason(tmp_path)
     checked. Since only the REASON string (not the `taxonomy_status` field) drives
     review/reject scoring, this silently made a broken/missing tool MORE permissive than
     either a working search or an explicitly-disabled one: the review-forcing safety net
-    that a length-exempted record already correctly gets (see
+    that a genuinely-searched-but-empty result set already correctly gets (see
     test_parse_tax_blast_no_hits above) vanished along with the tool. A missing file must
-    be treated identically to a genuinely-searched-but-empty result set."""
+    be treated identically to a genuinely-searched-but-empty result set (records already
+    tagged `taxonomy_exempt_length` by the caller are the one deliberate exception --
+    see test_parse_tax_blast_exempt_length_records_skip_not_checked_even_with_no_output_file
+    below)."""
     missing_path = str(tmp_path / "does_not_exist.taxonomy_blast.tsv")
     assert not Path(missing_path).exists()
     a = _ann("TEST.1", sp="Rangifer tarandus", gen="Rangifer")
@@ -156,6 +160,109 @@ def test_parse_tax_blast_missing_file_does_not_crash_with_multiple_records(tmp_p
     parse_tax_blast(missing_path, ann, _cfg())
     for a in ann.values():
         assert "taxonomy_not_checked" in a.reasons
+
+
+def test_parse_tax_blast_exempt_length_records_skip_not_checked(tmp_path):
+    """Real bug, found 2026-08-29 via forensic analysis of a real complete-mitogenome
+    cluster centroid (EU153454.1, 16,480 bp): records excluded from the search entirely
+    by `taxonomy_blast.max_query_length` (full organelle genomes -- see the
+    long-standing config comment "full organelles don't need kingdom verification") used
+    to get the exact same "taxonomy_not_checked" reason a genuinely-searched-but-no-hit
+    record gets. Since "taxonomy_not_checked" is unconditionally in
+    decision_rules.review_reasons, this permanently blocked otherwise-clean, high-scoring
+    complete genomes from ever reaching auto-KEEP. The pipeline.py caller now tags these
+    records `taxonomy_exempt_length` BEFORE calling parse_tax_blast(); this function must
+    recognize that tag and skip them, never adding "taxonomy_not_checked" on top."""
+    path = write_tax_blast(tmp_path, [])  # empty file -- record was never submitted
+    a = _ann("EU153454.1", sp="Mammuthus primigenius", gen="Mammuthus", length=16480)
+    a.taxonomy_status = "EXEMPT_LENGTH"
+    a.add_reason("taxonomy_exempt_length")
+    ann = {"EU153454.1": a}
+    parse_tax_blast(path, ann, _cfg())
+    assert "taxonomy_not_checked" not in a.reasons
+    assert a.reasons == ["taxonomy_exempt_length"]
+    assert a.taxonomy_status == "EXEMPT_LENGTH"
+
+
+def test_parse_tax_blast_exempt_length_records_skip_not_checked_even_with_no_output_file(tmp_path):
+    """Same guarantee as the test above, but for the tool-failure path (no output file
+    at all, e.g. mmseqs missing from PATH) -- must not regress to double-tagging exempt
+    records just because the search subprocess itself never ran."""
+    missing_path = str(tmp_path / "does_not_exist.taxonomy_blast.tsv")
+    assert not Path(missing_path).exists()
+    a = _ann("EU153454.1", sp="Mammuthus primigenius", gen="Mammuthus", length=16480)
+    a.taxonomy_status = "EXEMPT_LENGTH"
+    a.add_reason("taxonomy_exempt_length")
+    ann = {"EU153454.1": a}
+    parse_tax_blast(missing_path, ann, _cfg())
+    assert "taxonomy_not_checked" not in a.reasons
+    assert a.reasons == ["taxonomy_exempt_length"]
+
+
+def test_parse_tax_blast_exempt_length_does_not_affect_sibling_records(tmp_path):
+    """The exemption must be strictly per-record: a normal-length sibling record with a
+    genuine no-hit result must still correctly get "taxonomy_not_checked"."""
+    path = write_tax_blast(tmp_path, [])
+    exempt = _ann("EU153454.1", sp="Mammuthus primigenius", gen="Mammuthus", length=16480)
+    exempt.taxonomy_status = "EXEMPT_LENGTH"
+    exempt.add_reason("taxonomy_exempt_length")
+    normal = _ann("SHORT.1", sp="Mammuthus primigenius", gen="Mammuthus", length=400)
+    ann = {"EU153454.1": exempt, "SHORT.1": normal}
+    parse_tax_blast(path, ann, _cfg())
+    assert "taxonomy_not_checked" not in exempt.reasons
+    assert "taxonomy_not_checked" in normal.reasons
+
+
+def test_taxonomy_exempt_length_is_neutral_score_and_not_a_review_reason():
+    """Config-level guarantee the fix depends on: `taxonomy_exempt_length` must score 0
+    (a confident pass, not a bonus or penalty) and must never appear in
+    decision_rules.review_reasons or hard_reject_reasons -- otherwise it would still
+    force review/reject exactly like the bug it replaces."""
+    cfg = _cfg()
+    assert cfg["scoring"]["taxonomy_exempt_length"] == 0
+    assert "taxonomy_exempt_length" not in cfg["decision_rules"]["review_reasons"]
+    assert "taxonomy_exempt_length" not in cfg["decision_rules"]["hard_reject_reasons"]
+
+
+class _FakeRecord:
+    """Minimal stand-in for a FastaRecord -- mark_length_exempt_records only reads .id."""
+    def __init__(self, rid: str):
+        self.id = rid
+
+
+def test_mark_length_exempt_records_tags_mito_and_plastid_only():
+    """Pinned real scenario: EU153454.1 (Mito, 16,480 bp) should be tagged; a long
+    NucMark/Other-class record that merely happens to cross max_query_length (e.g. a
+    large nuclear scaffold) has no "can't plausibly be a contaminant" guarantee and must
+    NOT be tagged -- it keeps the normal taxonomy_not_checked review-forcing path."""
+    mito = _ann("EU153454.1", sp="Mammuthus primigenius", gen="Mammuthus", length=16480)
+    mito.marker_class = "Mito"
+    plastid = _ann("PLASTID_BIG.1", length=20000)
+    plastid.marker_class = "Plastid"
+    nucmark = _ann("NUCMARK_BIG.1", length=15000)
+    nucmark.marker_class = "NucMark"
+    other = _ann("OTHER_BIG.1", length=15000)
+    other.marker_class = "Other"
+    ann = {a.record_key: a for a in (mito, plastid, nucmark, other)}
+    records = [_FakeRecord(k) for k in ann]
+
+    n_organelle, n_other = mark_length_exempt_records(records, ann)
+
+    assert n_organelle == 2
+    assert n_other == 2
+    assert "taxonomy_exempt_length" in mito.reasons
+    assert mito.taxonomy_status == "EXEMPT_LENGTH"
+    assert "taxonomy_exempt_length" in plastid.reasons
+    assert "taxonomy_exempt_length" not in nucmark.reasons
+    assert "taxonomy_exempt_length" not in other.reasons
+    # NucMark/Other records are untouched here -- parse_tax_blast() applies
+    # taxonomy_not_checked to them itself, since they're absent from `hits`.
+    assert nucmark.taxonomy_status == "NOT_CHECKED"
+    assert other.taxonomy_status == "NOT_CHECKED"
+
+
+def test_mark_length_exempt_records_empty_input():
+    assert mark_length_exempt_records([], {}) == (0, 0)
 
 
 def test_parse_tax_blast_only_first_hit_used(tmp_path):

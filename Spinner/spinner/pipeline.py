@@ -38,6 +38,7 @@ from .reporting import write_split_fastas, write_summary_html, write_summary_tsv
 from .taxonomy_blast import (
     load_taxdb,
     make_windowed_fasta,
+    mark_length_exempt_records,
     parse_tax_blast,
     parse_tax_blast_escalation,
     parse_tax_blast_nt_fallback,
@@ -490,10 +491,14 @@ def run_pipeline(args, filter_mode: bool) -> None:
             max_qlen = int(cfg["taxonomy_blast"].get("max_query_length", 0))
             if max_qlen > 0:
                 tax_records = [r for r in screened_records if len(r.seq_upper) <= max_qlen]
-                n_skipped = len(screened_records) - len(tax_records)
-                if n_skipped:
-                    info(f"  Skipping {n_skipped:,} sequences >{max_qlen:,} bp"
-                         f" (max_query_length) — will be marked taxonomy_not_checked")
+                exempt_records = [r for r in screened_records if len(r.seq_upper) > max_qlen]
+                if exempt_records:
+                    n_organelle_exempt, n_other_exempt = mark_length_exempt_records(exempt_records, ann)
+                    info(f"  Skipping {len(exempt_records):,} sequences >{max_qlen:,} bp"
+                         f" (max_query_length): {n_organelle_exempt:,} Mito/Plastid marked"
+                         f" taxonomy_exempt_length (confident pass, not review-forcing),"
+                         f" {n_other_exempt:,} other marker classes left for the normal"
+                         f" taxonomy_not_checked review-forcing path below")
                 tmp_keyed_tax = outprefix + ".tmp.keyed.tax.fasta"
                 write_keyed_fasta(tax_records, tmp_keyed_tax)
                 temp_files.append(tmp_keyed_tax)
@@ -541,7 +546,9 @@ def run_pipeline(args, filter_mode: bool) -> None:
             # the same "taxonomy_not_checked" review-forcing reason a genuinely-searched-
             # but-no-hit record gets -- silently making a broken tool MORE permissive than
             # a working one. parse_tax_blast() itself now handles a missing file
-            # gracefully (every record falls through to "not checked"), so this call is
+            # gracefully (every record eligible for the search falls through to "not
+            # checked"; records already tagged `taxonomy_exempt_length` above are skipped
+            # and keep that tag regardless of whether the search ran), so this call is
             # always safe and always correct to make.
             if not os.path.exists(out_t):
                 info("  No taxonomy_blast output available (search failed to run) --"

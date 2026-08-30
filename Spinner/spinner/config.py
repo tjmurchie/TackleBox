@@ -184,6 +184,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "bad_keyword_review",
             "taxonomy_no_expected_match",
             "taxonomy_not_checked",
+            # Deliberately NOT here: "taxonomy_exempt_length". A record excluded from the
+            # taxonomy search by max_query_length (full organelle genomes -- see the
+            # comment on that setting) is a confident pass, not an unresolved case; it
+            # must not force review the way a genuinely-unverified "taxonomy_not_checked"
+            # record does. See taxonomy_blast.py::parse_tax_blast() and the pipeline.py
+            # taxonomy_blast stage for where this reason is applied.
             "windowed_blast_conflict",
             "chimera_borderline",
             "cluster_nonrepresentative",
@@ -212,6 +218,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "bad_keyword_review": -30,
         "taxonomy_cross_kingdom": -100,
         "taxonomy_no_expected_match": -10,  # reduced: rare/ancient taxa often absent from BLAST DB
+        "taxonomy_exempt_length": 0,     # confident pass by design (full organelle, see
+                                         # taxonomy_blast.max_query_length) -- neutral,
+                                         # not a penalty; deliberately not in review_reasons
         "taxonomy_same_species": 20,
         "taxonomy_same_genus": 10,
         "refseq_preferred": 10,

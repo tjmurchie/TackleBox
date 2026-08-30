@@ -191,3 +191,44 @@ def test_annotation_to_decision_all_n(tmp_path):
     score_decide(ann, cfg)
     assert "n_fraction_high" in ann["ALLN.1"].reasons
     assert ann["ALLN.1"].decision == "REVIEW"
+
+
+# ---------------------------------------------------------------------------
+# taxonomy_exempt_length fix (2026-08-29): a clean, length-exempted complete
+# genome must reach KEEP on its own merit, unlike the "taxonomy_not_checked"
+# reason it replaces for this case.
+# ---------------------------------------------------------------------------
+
+def test_length_exempt_complete_genome_reaches_keep():
+    """Pinned real scenario: EU153454.1 (16,480 bp complete mitogenome, real cluster
+    centroid in a live PalaeoSCOPE run) had reasons
+    `complete_organelle;taxonomy_not_checked;cluster_representative` and
+    decision_score=110 (well above keep_min=65) but stayed stuck at REVIEW purely
+    because `taxonomy_not_checked` is in decision_rules.review_reasons. With the fix,
+    the exact same score-contributing reasons, but tagged `taxonomy_exempt_length`
+    instead of `taxonomy_not_checked` (since this record was excluded from the search
+    by max_query_length, not genuinely searched-and-not-found), must reach KEEP."""
+    a = make_ann(accession="EU153454.1", record_key="EU153454.1", length=16480)
+    a.add_reason("complete_organelle")       # +5
+    a.add_reason("taxonomy_exempt_length")   # 0
+    a.add_reason("cluster_representative")   # +5
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["EU153454.1"].decision_score == 110
+    assert ann["EU153454.1"].decision == "KEEP"
+
+
+def test_same_score_with_old_taxonomy_not_checked_reason_still_forces_review():
+    """Contrast case, same file: a record that was genuinely SUBMITTED to the taxonomy
+    search and got no hit (real "taxonomy_not_checked", not a length exemption) must
+    still be correctly blocked from auto-KEEP at the identical score -- the fix must not
+    weaken review-forcing for genuinely-unverified records, only for confidently-exempt
+    ones."""
+    a = make_ann(accession="SHORT.1", record_key="SHORT.1", length=500)
+    a.add_reason("complete_organelle")     # +5
+    a.add_reason("taxonomy_not_checked")   # 0
+    a.add_reason("cluster_representative")  # +5
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["SHORT.1"].decision_score == 110
+    assert ann["SHORT.1"].decision == "REVIEW"

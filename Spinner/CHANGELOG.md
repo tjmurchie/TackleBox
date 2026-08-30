@@ -1,5 +1,49 @@
 # Spinner Changelog
 
+## 2026-08-29 (complete organelle genomes were permanently blocked from auto-KEEP)
+
+Found via forensic analysis of a real complete-mitogenome cluster centroid (accession
+EU153454.1, 16,480 bp) from a live PalaeoSCOPE run: it scored 110 (well above
+`keep_min: 65`), was correctly selected as its 166-member cluster's centroid, and was
+clean on every other QC axis, yet stayed stuck at REVIEW instead of reaching KEEP
+automatically. Root cause: `taxonomy_blast.max_query_length` (10,000 bp in real project
+configs) excludes full organelle genomes from the taxonomy verification search entirely,
+per that setting's own long-standing comment ("skip sequences >10 kb — full organelles
+don't need kingdom verification"). But length-exempted records used to be tagged
+`taxonomy_not_checked` -- the EXACT SAME reason a record genuinely SUBMITTED to the search
+but given no hit receives -- and since `taxonomy_not_checked` is unconditionally in
+`decision_rules.review_reasons`, every length-exempted complete genome was permanently
+blocked from auto-KEEP regardless of score. This directly undermined the goal of an
+end-to-end pipeline: the very records most confidently correct (complete organelle
+genomes) required manual review every time, while genuinely ambiguous short/partial
+records got the identical treatment.
+
+Fixed: length-exempted records with `marker_class` of `Mito` or `Plastid` (the two classes
+the exemption's own rationale actually applies to -- a random contaminant essentially
+never assembles into a complete, correctly-headered, correctly-sized organelle genome) now
+get a new, distinct `taxonomy_exempt_length` reason instead, scored neutrally (`0`) in
+`config.py` and deliberately **not** added to `review_reasons`/`hard_reject_reasons`, so a
+genuinely clean, high-scoring complete genome can reach KEEP on its own merit. Records of
+other marker classes (`NucMark`, `Other`) that happen to also exceed `max_query_length`
+(e.g. a large nuclear scaffold) are deliberately left untagged and keep the normal
+`taxonomy_not_checked` review-forcing safety net -- they have no equivalent
+"can't-plausibly-be-a-contaminant" guarantee. New `taxonomy_blast.py::mark_length_exempt_records()`
+implements the marker-class-scoped tagging (called from `pipeline.py`'s taxonomy_blast
+stage before `parse_tax_blast()` runs); `parse_tax_blast()`'s per-record loop now skips
+records already tagged this way so they are never double-tagged with the blocking reason.
+
+174 passed (was 166), ruff clean (18 pre-existing findings in touched files, unchanged).
+Adversarially verified by an independent fresh agent before commit given this changes
+live default scoring behavior for every Spinner user, not just PalaeoSCOPE.
+
+Verified against real data: re-ran the exact same `Spinner filter` command against the
+real beringia_organelle_test_v2 project's already-fetched FlyGuide output (reusing the
+cached `taxonomy_blast.tsv`, so this isolates the fix's effect from the search itself).
+Exactly one record's decision changed: EU153454.1, REVIEW -> KEEP, decision_score
+unchanged at 110, reasons correctly `complete_organelle;taxonomy_exempt_length;
+cluster_representative` (was `...;taxonomy_not_checked;...`). All 700 other REJECT/REVIEW/
+KEEP calls are byte-identical to the pre-fix run -- zero unintended promotions.
+
 ## 2026-08-28 (a missing/broken taxonomy tool was silently MORE permissive than a working one)
 
 Found via a live PalaeoSCOPE run at real Holarctic-beetle scale (11 species, taxonomically

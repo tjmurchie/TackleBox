@@ -306,6 +306,7 @@ starting score (`start: 100`).  Penalties are negative; bonuses are positive.
 | `bad_keyword_review` | `−30` | Review reason |
 | `taxonomy_cross_kingdom` | `−100` | Hard reject |
 | `taxonomy_no_expected_match` | `−10` | Review reason; reduced penalty since rare taxa are often absent |
+| `taxonomy_exempt_length` | `0` | **Not** a review reason — confident pass for records excluded from the search by `taxonomy_blast.max_query_length` (e.g. full organelle genomes) |
 | `taxonomy_same_species` | `+20` | Bonus |
 | `taxonomy_same_genus` | `+10` | Bonus |
 | `refseq_preferred` | `+10` | Accession starts with NC_, NM_, NR_, NZ_, NG_, XM_, XR_, etc. |

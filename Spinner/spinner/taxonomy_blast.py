@@ -146,6 +146,47 @@ class TaxdumpDB:
         return bool(n1 and n2 and n1.lower() == n2.lower())
 
 
+# Marker classes for which `taxonomy_blast.max_query_length` exemption is a confident
+# pass rather than an unresolved case -- see `mark_length_exempt_records` below.
+ORGANELLE_MARKER_CLASSES = frozenset({"Mito", "Plastid"})
+
+
+def mark_length_exempt_records(exempt_records, ann: Dict[str, Annotation]) -> Tuple[int, int]:
+    """Tag records excluded from the taxonomy search by `max_query_length` -- called by
+    `pipeline.py`'s taxonomy_blast stage BEFORE `parse_tax_blast()` runs, on the subset of
+    `screened_records` too long to search at all.
+
+    Real bug, found 2026-08-29 via forensic analysis of a real complete-mitogenome
+    cluster centroid (EU153454.1, 16,480 bp) that scored well above keep_min but stayed
+    stuck at REVIEW: length-exempted records used to get "taxonomy_not_checked", the
+    EXACT SAME reason a record genuinely SUBMITTED to the search but given no hit
+    receives. Per this config's own long-standing comment ("skip sequences >10 kb --
+    full organelles don't need kingdom verification"), length exemption is a confident,
+    deliberate design decision ONLY for organelle sequences -- a random contaminant
+    essentially never assembles into a complete, correctly-headered organelle genome of
+    the right size. Since "taxonomy_not_checked" is unconditionally in
+    decision_rules.review_reasons, every length-exempted complete genome was permanently
+    blocked from auto-KEEP regardless of score.
+
+    Scoped to `marker_class in ORGANELLE_MARKER_CLASSES` only (set earlier by
+    `annotate()`/`classify()`, well before this stage runs): a long NucMark/Other-class
+    sequence (e.g. a large nuclear scaffold or BAC clone that happens to cross
+    max_query_length) has no such "can't plausibly be a contaminant" guarantee and must
+    keep the normal `taxonomy_not_checked` review-forcing safety net, applied by
+    `parse_tax_blast()`'s own per-record loop since these records are never tagged here.
+
+    Returns ``(n_organelle_exempt, n_other_exempt)`` for caller logging.
+    """
+    n_organelle = 0
+    for r in exempt_records:
+        a = ann[r.id]
+        if a.marker_class in ORGANELLE_MARKER_CLASSES:
+            a.taxonomy_status = "EXEMPT_LENGTH"
+            a.add_reason("taxonomy_exempt_length")
+            n_organelle += 1
+    return n_organelle, len(exempt_records) - n_organelle
+
+
 # ---------------------------------------------------------------------------
 # Taxonomy BLAST parser
 # ---------------------------------------------------------------------------
@@ -165,10 +206,19 @@ def parse_tax_blast(
     Subsequent hits are ignored.
 
     Safe to call even when *path* does not exist (e.g. the search subprocess failed to
-    run at all) -- every record is then treated exactly like a genuine "no hit found"
-    result (`taxonomy_not_checked`), the same review-forcing safety net a record
-    deliberately exempted by `max_query_length` already gets. This is deliberate: a
-    missing/broken search tool must never be silently MORE permissive than a working one.
+    run at all) -- every record NOT already tagged `taxonomy_exempt_length` (see below)
+    is then treated like a genuine "no hit found" result (`taxonomy_not_checked`), the
+    normal review-forcing safety net for a record that was never actually verified. This
+    is deliberate: a missing/broken search tool must never be silently MORE permissive
+    than a working one.
+
+    Records the caller (`pipeline.py`'s taxonomy_blast stage) already tagged
+    `taxonomy_exempt_length` -- excluded from the search entirely by
+    `max_query_length`, e.g. full organelle genomes -- are skipped by the per-record
+    loop below and never get `taxonomy_not_checked` added. Real bug fixed 2026-08-29:
+    length exemption used to get the exact same `taxonomy_not_checked` reason as a
+    record that was genuinely searched and found nothing, permanently blocking
+    otherwise-clean complete genomes from auto-KEEP.
     """
     tb = cfg.get("taxonomy_blast", {})
     min_qcov = float(tb.get("min_qcov", 50.0))
@@ -189,14 +239,17 @@ def parse_tax_blast(
     # taxonomy tool therefore silently produced a MORE PERMISSIVE panel than either a
     # working search or an explicitly-disabled one: the review-forcing safety net that
     # normally applies to every genuinely-unverified record vanished along with the tool.
-    # Confirmed via a real accession: the same 16kb+ complete-genome record that correctly
-    # got `taxonomy_not_checked` (and was correctly barred from auto-KEEP by it) when the
-    # search ran but exempted it via `max_query_length` was MISSING that reason entirely,
-    # and reached KEEP, when the whole search silently failed to run due to a missing
-    # `mmseqs` binary. Fixed by reading the file only when it exists (leaving `hits` empty
-    # otherwise) so the per-record loop -- which already correctly treats "not present in
-    # `hits`" as `taxonomy_not_checked` for the exemption case -- runs unconditionally and
-    # applies the exact same review-forcing reason for the tool-failure case too.
+    # Confirmed via a real accession: a 16kb+ complete-genome record exempted via
+    # `max_query_length` was MISSING even that (was left at the Annotation dataclass's
+    # bare default with no reason at all) and reached KEEP when the whole search
+    # silently failed to run due to a missing `mmseqs` binary -- a materially different,
+    # and worse, outcome than the deliberate `taxonomy_exempt_length` tag that same
+    # record gets when the search actually runs (see 2026-08-29 fix below: exemption is
+    # now a distinct, non-review-blocking reason, not the same as "genuinely unchecked").
+    # Fixed by reading the file only when it exists (leaving `hits` empty otherwise) so
+    # the per-record loop below runs unconditionally and applies `taxonomy_not_checked`
+    # to every record that was actually eligible for the search but wasn't already
+    # tagged `taxonomy_exempt_length`.
     if os.path.exists(path):
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -239,6 +292,13 @@ def parse_tax_blast(
                 }
 
     for qid, a in ann.items():
+        if "taxonomy_exempt_length" in a.reasons:
+            # Already tagged by the pipeline.py caller BEFORE this function ran, at the
+            # point max_query_length excluded this record from the search entirely --
+            # do not also add "taxonomy_not_checked" (it was never submitted, so it can
+            # never appear in `hits` either way, and double-tagging would re-introduce
+            # the review-forcing reason this exemption is specifically meant to avoid).
+            continue
         if qid not in hits:
             # Query was not in BLAST output (no hits above thresholds).
             a.add_reason("taxonomy_not_checked")
