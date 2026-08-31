@@ -1,5 +1,29 @@
 # Spinner Changelog
 
+## 2026-08-31 (new opt-in NR-protein escalation for `taxonomy_no_expected_match`)
+
+Extends the existing cross-kingdom escalation machinery (`escalate_cross_kingdom`) with
+a second, independent opt-in: `taxonomy_blast.escalate_no_expected_match` (default
+`False`). When enabled, records the primary taxonomy search left
+`taxonomy_no_expected_match` (typically because the primary reference DB, e.g.
+Swiss-Prot, has no representative for a genuinely correct identity) are re-checked
+against the broader `nr_protein_db` -- but only rescued on a real genus/species match,
+not merely the same kingdom (the cross-kingdom escalation's own, deliberately weaker,
+win-condition is unchanged and still exists for its own purpose: ruling out
+contamination, not confirming identity). A rescued record is reclassified exactly as the
+primary search would have classified it directly (`PASS_GENUS`/`PASS_SPECIES`, with the
+matching score-bearing reason), plus a neutral `taxonomy_rescued_nr_no_expected_match`
+provenance reason.
+
+New: `taxonomy_blast.py::_parse_escalation_hits()` (hit-parsing shared between both
+escalation checks, extracted from the existing `parse_tax_blast_escalation()` with no
+behavior change) and `parse_tax_blast_escalation_genus_species()`. `pipeline.py` wires
+the new check in as its own resumable stage (`*.escalation_nr_no_match.tsv`), mirroring
+the existing cross-kingdom escalation stage's own resume/checkpoint conventions.
+
+191 tests passed (was 183), ruff clean (no new findings; pre-existing unrelated lint
+warnings elsewhere in the file are unchanged).
+
 ## 2026-08-30 (follow-up: report/console output now matches the accept/reject-only default)
 
 Same-day follow-up to the decision-model change below. `reporting.py`

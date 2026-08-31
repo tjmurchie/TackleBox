@@ -16,6 +16,7 @@ from spinner.config import DEFAULT_CONFIG
 from spinner.taxonomy_blast import (
     mark_length_exempt_records,
     parse_tax_blast,
+    parse_tax_blast_escalation_genus_species,
     parse_tax_blast_nt_fallback,
     parse_windowed_blast,
 )
@@ -409,6 +410,142 @@ def test_nt_fallback_no_candidates_is_noop(tmp_path):
     resolved = parse_tax_blast_nt_fallback(str(tmp_path / "missing.tsv"), ann, _cfg(), set())
     assert resolved == 0
     assert "taxonomy_not_checked" in a.reasons
+
+
+# ---------------------------------------------------------------------------
+# NR-protein escalation for taxonomy_no_expected_match (genus/species win-condition)
+# ---------------------------------------------------------------------------
+
+class _GenusStubTaxdb:
+    """Minimal taxdb stub: staxid 9615 -> genus 'Canis', anything else -> ''."""
+
+    def get_rank_name(self, staxid, rank):
+        if rank == "genus" and staxid == 9615:
+            return "Canis"
+        return ""
+
+
+def test_escalation_no_expected_match_disabled_by_default_in_config():
+    assert DEFAULT_CONFIG["taxonomy_blast"]["escalate_no_expected_match"] is False
+
+
+def test_escalation_no_expected_match_rescues_on_species_string_match(tmp_path):
+    a = _ann("WOLF.1", sp="Canis lupus", gen="Canis")
+    a.add_reason("taxonomy_no_expected_match")
+    ann = {"WOLF.1": a}
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="WOLF.1", pident=95, length=190, qlen=200, sciname="Canis lupus",
+    )]
+    lines = [lines[0].replace("\t9615\t", "\tN/A\t")]  # no taxdump staxid -> string fallback
+    path = write_tax_blast(tmp_path, lines)
+
+    rescued = parse_tax_blast_escalation_genus_species(path, ann, _cfg(), None, "nr_no_expected_match")
+
+    assert rescued == 1
+    assert a.taxonomy_status == "PASS_SPECIES"
+    assert "taxonomy_no_expected_match" not in a.reasons
+    assert "taxonomy_same_species" in a.reasons
+    assert "taxonomy_rescued_nr_no_expected_match" in a.reasons
+
+
+def test_escalation_no_expected_match_rescues_on_genus_via_taxdb(tmp_path):
+    a = _ann("DOG.1", sp="Canis familiaris", gen="Canis")
+    a.add_reason("taxonomy_no_expected_match")
+    ann = {"DOG.1": a}
+    # Sciname deliberately does NOT contain "Canis" as a substring, so only the
+    # taxdb-based genus lookup (not the string fallback) can rescue this record.
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="DOG.1", pident=95, length=190, qlen=200, sciname="Vulpes vulpes",
+    )]
+    path = write_tax_blast(tmp_path, lines)  # staxid 9615 from the shared template
+
+    rescued = parse_tax_blast_escalation_genus_species(
+        path, ann, _cfg(), _GenusStubTaxdb(), "nr_no_expected_match"
+    )
+
+    assert rescued == 1
+    assert a.taxonomy_status == "PASS_GENUS"
+    assert "taxonomy_no_expected_match" not in a.reasons
+    assert "taxonomy_same_genus" in a.reasons
+
+
+def test_escalation_no_expected_match_no_hit_leaves_record_untouched(tmp_path):
+    a = _ann("NOHIT.1", sp="Canis lupus", gen="Canis")
+    a.add_reason("taxonomy_no_expected_match")
+    ann = {"NOHIT.1": a}
+
+    rescued = parse_tax_blast_escalation_genus_species(
+        str(tmp_path / "missing.tsv"), ann, _cfg(), None, "nr_no_expected_match"
+    )
+
+    assert rescued == 0
+    assert "taxonomy_no_expected_match" in a.reasons
+    assert a.taxonomy_status == "NOT_CHECKED"
+
+
+def test_escalation_no_expected_match_wrong_taxon_not_rescued(tmp_path):
+    """A hit that shares neither genus nor species must NOT rescue the record --
+    this is the whole point of the stricter genus/species win-condition vs. the
+    cross-kingdom escalation's same-kingdom-is-enough check."""
+    a = _ann("CAT.1", sp="Felis catus", gen="Felis")
+    a.add_reason("taxonomy_no_expected_match")
+    ann = {"CAT.1": a}
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="CAT.1", pident=95, length=190, qlen=200, sciname="Canis lupus",
+    )]
+    path = write_tax_blast(tmp_path, lines)
+
+    rescued = parse_tax_blast_escalation_genus_species(
+        path, ann, _cfg(), _GenusStubTaxdb(), "nr_no_expected_match"
+    )
+
+    assert rescued == 0
+    assert "taxonomy_no_expected_match" in a.reasons
+
+
+def test_escalation_no_expected_match_ignores_records_without_that_reason(tmp_path):
+    """Only records currently flagged taxonomy_no_expected_match are candidates --
+    a record that already passed (or was never checked) must not be touched even if
+    it happens to appear in the escalation search output."""
+    a = _ann("PASSED.1", sp="Canis lupus", gen="Canis")
+    a.taxonomy_status = "PASS_SPECIES"
+    a.add_reason("taxonomy_same_species")
+    ann = {"PASSED.1": a}
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="PASSED.1", pident=95, length=190, qlen=200, sciname="Canis lupus",
+    )]
+    path = write_tax_blast(tmp_path, lines)
+
+    rescued = parse_tax_blast_escalation_genus_species(
+        path, ann, _cfg(), None, "nr_no_expected_match"
+    )
+
+    assert rescued == 0
+    assert a.taxonomy_status == "PASS_SPECIES"
+
+
+def test_escalation_no_expected_match_below_qcov_threshold_not_rescued(tmp_path):
+    a = _ann("LOWCOV.1", sp="Canis lupus", gen="Canis")
+    a.add_reason("taxonomy_no_expected_match")
+    ann = {"LOWCOV.1": a}
+    # length/qlen = 25% query coverage, below the default 50% min_qcov filter.
+    lines = [BLAST_TAX_TEMPLATE.format(
+        qid="LOWCOV.1", pident=95, length=50, qlen=200, sciname="Canis lupus",
+    )]
+    path = write_tax_blast(tmp_path, lines)
+
+    rescued = parse_tax_blast_escalation_genus_species(
+        path, ann, _cfg(), None, "nr_no_expected_match"
+    )
+
+    assert rescued == 0
+    assert "taxonomy_no_expected_match" in a.reasons
+
+
+def test_escalation_rescued_no_expected_match_score_key_is_neutral():
+    """The provenance reason itself must score 0 -- the real score comes from
+    taxonomy_same_genus/taxonomy_same_species, not double-counted here."""
+    assert DEFAULT_CONFIG["scoring"]["taxonomy_rescued_nr_no_expected_match"] == 0
 
 
 # ---------------------------------------------------------------------------

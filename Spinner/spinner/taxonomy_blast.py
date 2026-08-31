@@ -473,27 +473,12 @@ def parse_tax_blast_nt_fallback(
 # Windowed BLAST (chimerism screen)
 # ---------------------------------------------------------------------------
 
-def parse_tax_blast_escalation(
-    path: str,
-    ann: Dict[str, Annotation],
-    cfg: dict,
-    taxdb: Optional[TaxdumpDB],
-    source_label: str,
-    nt_mode: bool = False,
-) -> int:
-    """Re-evaluate cross-kingdom rejections against a fallback database.
-
-    For each record previously flagged ``taxonomy_cross_kingdom``, checks
-    whether the escalation search found an expected-kingdom hit.  If so, the
-    cross-kingdom reason is removed and the record is re-classified as
-    ``ESCALATION_RESCUED`` with a ``taxonomy_rescued_{source_label}`` reason.
-
-    *nt_mode* selects nucleotide-to-nucleotide comparison (NT BLAST) rather
-    than translated nuc→protein (MMSeqs2 Swiss-Prot / NR).  The default
-    pident threshold for NT mode is 80 % (megablast territory); for protein
-    mode the value from ``taxonomy_blast.min_pident`` is used (default 30 %).
-
-    Returns the count of rescued records.
+def _parse_escalation_hits(path: str, cfg: dict, nt_mode: bool = False) -> Dict[str, dict]:
+    """Shared TSV-hit parsing for every escalation search (cross-kingdom rescue and
+    the genus/species no-expected-match rescue below) -- identical column layout,
+    pident/qcov filtering, and top-hit-per-query selection; only the downstream
+    win-condition differs by caller. Returns {} if *path* doesn't exist (search
+    failed to run), same as every other parse_* function in this module.
     """
     tb = cfg.get("taxonomy_blast", {})
     min_qcov = float(tb.get("min_qcov", 50.0))
@@ -503,12 +488,11 @@ def parse_tax_blast_escalation(
     ))
     search_type = 1 if nt_mode else int(tb.get("search_type", 1))
 
+    hits: Dict[str, dict] = {}
     if not os.path.exists(path):
-        return 0
+        return hits
 
     seen_top: set = set()
-    hits: Dict[str, dict] = {}
-
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             parts = line.rstrip().split("\t")
@@ -535,6 +519,41 @@ def parse_tax_blast_escalation(
                 "sacc": sacc, "pid": pid,
                 "staxids": stax_s, "sciname": sciname.strip(),
             }
+    return hits
+
+
+def parse_tax_blast_escalation(
+    path: str,
+    ann: Dict[str, Annotation],
+    cfg: dict,
+    taxdb: Optional[TaxdumpDB],
+    source_label: str,
+    nt_mode: bool = False,
+) -> int:
+    """Re-evaluate cross-kingdom rejections against a fallback database.
+
+    For each record previously flagged ``taxonomy_cross_kingdom``, checks
+    whether the escalation search found an expected-kingdom hit.  If so, the
+    cross-kingdom reason is removed and the record is re-classified as
+    ``ESCALATION_RESCUED`` with a ``taxonomy_rescued_{source_label}`` reason.
+
+    *nt_mode* selects nucleotide-to-nucleotide comparison (NT BLAST) rather
+    than translated nuc→protein (MMSeqs2 Swiss-Prot / NR).  The default
+    pident threshold for NT mode is 80 % (megablast territory); for protein
+    mode the value from ``taxonomy_blast.min_pident`` is used (default 30 %).
+
+    Note this win-condition only requires the escalation hit to share the same
+    *kingdom* as expected -- it does not confirm genus/species identity. That
+    is intentional here (its job is ruling out cross-kingdom contamination, not
+    confirming a match); see :func:`parse_tax_blast_escalation_genus_species`
+    for the stricter genus/species win-condition used to rescue
+    ``taxonomy_no_expected_match`` records instead.
+
+    Returns the count of rescued records.
+    """
+    hits = _parse_escalation_hits(path, cfg, nt_mode=nt_mode)
+    if not hits:
+        return 0
 
     kd_map = {
         "Animal": "Eukaryota", "Plant": "Eukaryota",
@@ -582,6 +601,80 @@ def parse_tax_blast_escalation(
             a.taxonomy_top_pident = str(h["pid"])
             a.taxonomy_top_staxids = h["staxids"]
             rescued += 1
+
+    return rescued
+
+
+def parse_tax_blast_escalation_genus_species(
+    path: str,
+    ann: Dict[str, Annotation],
+    cfg: dict,
+    taxdb: Optional[TaxdumpDB],
+    source_label: str,
+) -> int:
+    """Re-evaluate ``taxonomy_no_expected_match`` records against a broader NR-protein
+    escalation search, using a genuine genus/species win-condition -- unlike
+    :func:`parse_tax_blast_escalation`'s cross-kingdom rescue (same-kingdom is enough
+    there), a record here must actually match the expected genus or species to be
+    rescued.  This targets the real, observed failure mode where the primary
+    search (typically a smaller reference DB, e.g. Swiss-Prot) has no representative
+    for a genuinely correct identity, so the record is misclassified
+    ``NO_EXPECTED_MATCH`` rather than confirmed -- a broader NR search often does have
+    that representative.
+
+    A rescued record is reclassified exactly as the primary search would have
+    classified it had it found this same hit directly (``PASS_GENUS`` or
+    ``PASS_SPECIES``, with the matching ``taxonomy_same_genus``/``taxonomy_same_species``
+    reason and its normal score), plus a neutral ``taxonomy_rescued_{source_label}``
+    provenance reason so the escalation is visible in reports without double-counting
+    score. ``taxonomy_no_expected_match`` (and its score penalty) is removed.
+
+    Returns the count of rescued records.
+    """
+    hits = _parse_escalation_hits(path, cfg, nt_mode=False)
+    if not hits:
+        return 0
+
+    rescued = 0
+    for qid, a in ann.items():
+        if "taxonomy_no_expected_match" not in a.reasons:
+            continue
+        if qid not in hits:
+            continue
+
+        h = hits[qid]
+        sp = a.species_guess.lower()
+        gen = a.genus_guess.lower()
+        hs = h["sciname"].lower()
+        matched_status: Optional[str] = None
+
+        if taxdb and h["staxids"] and h["staxids"] not in ("N/A", "0", ""):
+            try:
+                staxid = int(h["staxids"].split(";")[0])
+                hit_genus = taxdb.get_rank_name(staxid, "genus")
+                if gen and hit_genus.lower() == gen:
+                    matched_status = "PASS_GENUS"
+            except (ValueError, AttributeError):
+                pass
+
+        if matched_status is None:
+            if sp and sp in hs:
+                matched_status = "PASS_SPECIES"
+            elif gen and gen in hs:
+                matched_status = "PASS_GENUS"
+
+        if matched_status is None:
+            continue
+
+        a.reasons.remove("taxonomy_no_expected_match")
+        a.taxonomy_status = matched_status
+        a.add_reason("taxonomy_same_species" if matched_status == "PASS_SPECIES" else "taxonomy_same_genus")
+        a.add_reason(f"taxonomy_rescued_{source_label}")
+        a.taxonomy_top_hit = h["sacc"]
+        a.taxonomy_top_name = h["sciname"]
+        a.taxonomy_top_pident = str(h["pid"])
+        a.taxonomy_top_staxids = h["staxids"]
+        rescued += 1
 
     return rescued
 

@@ -104,6 +104,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "nt_blast_db": "",              # BLAST NT nucleotide DB path for level-2 escalation
         "escalation_nr_min_pident": 0.0,   # 0 = use min_pident; override for NR-specific threshold
         "escalation_nt_min_pident": 80.0,  # megablast-appropriate threshold for NT nucleotide check
+        # Separate opt-in from escalate_cross_kingdom above: re-checks taxonomy_no_expected_match
+        # records (NOT cross-kingdom rejects) against the same nr_protein_db, but only rescues on
+        # a genuine genus/species match -- same-kingdom is not enough (see
+        # taxonomy_blast.py::parse_tax_blast_escalation_genus_species). Kept as its own toggle
+        # because taxonomy_no_expected_match is typically far more common than cross-kingdom
+        # rejects, so this touches a larger, more expensive-to-search candidate set.
+        "escalate_no_expected_match": False,
         # NT fallback: records left taxonomy_not_checked by the primary search (commonly
         # non-coding sequence -- rRNA/tRNA genes, D-loop/control region, introns, intergenic
         # spacers -- with no ORF for a protein/translated search to find) are re-checked with a
@@ -242,6 +249,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "adapter_trimmed_rescued": 5,   # small positive: sequence survived trimming and re-screen
         "taxonomy_rescued_nr_protein": 0,   # cleared cross-kingdom by NR protein
         "taxonomy_rescued_nt_blast": 0,     # cleared cross-kingdom by NT nucleotide
+        "taxonomy_rescued_nr_no_expected_match": 0,  # genus/species confirmed by NR protein;
+                                                      # taxonomy_same_genus/species carries the real score
         "taxonomy_checked_nt_fallback": 0,  # provenance marker only — real pass/fail reason scores separately
         "sole_representative": 10,
         "cluster_representative": 5,

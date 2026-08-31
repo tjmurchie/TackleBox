@@ -41,6 +41,7 @@ from .taxonomy_blast import (
     mark_length_exempt_records,
     parse_tax_blast,
     parse_tax_blast_escalation,
+    parse_tax_blast_escalation_genus_species,
     parse_tax_blast_nt_fallback,
     parse_windowed_blast,
 )
@@ -727,6 +728,62 @@ def run_pipeline(args, filter_mode: bool) -> None:
                     info(f"  Confirmed cross-kingdom after escalation: {final_cross:,}")
                 else:
                     info("  Cross-kingdom escalation: no rejections to re-verify")
+
+            # --- NR-protein escalation for taxonomy_no_expected_match ---
+            # Separate opt-in from escalate_cross_kingdom above: re-checks records the
+            # primary search left NO_EXPECTED_MATCH against the broader NR protein DB,
+            # rescuing only on a genuine genus/species match (not merely same-kingdom --
+            # see parse_tax_blast_escalation_genus_species's own docstring for why this
+            # win-condition is intentionally stricter than the cross-kingdom rescue above).
+            if cfg["taxonomy_blast"].get("escalate_no_expected_match", False):
+                no_match_keys = {k for k, a in ann.items()
+                                  if "taxonomy_no_expected_match" in a.reasons}
+                nr_db = cfg["taxonomy_blast"].get("nr_protein_db", "")
+                if no_match_keys and nr_db:
+                    info(f"  No-expected-match escalation: {len(no_match_keys):,} records to re-verify"
+                         f" against NR protein: {nr_db}")
+                    nem_records = [r for r in screened_records if r.id in no_match_keys]
+                    out_esc_nem = outprefix + ".escalation_nr_no_match.tsv"
+                    esc_nem_fasta = outprefix + ".tmp.esc_nr_no_match.fasta"
+                    temp_files.append(esc_nem_fasta)
+                    ck_esc_nem = out_esc_nem + ".mmseqs_batches"
+                    nem_already_done = (
+                        os.path.exists(out_esc_nem)
+                        and os.path.getsize(out_esc_nem) > 0
+                        and not os.path.exists(ck_esc_nem)
+                    )
+                    if nem_already_done:
+                        info("  [resume] escalation_nr_no_match.tsv already exists — reusing")
+                    else:
+                        write_keyed_fasta(nem_records, esc_nem_fasta)
+                        nem_cfg = dict(cfg["taxonomy_blast"])
+                        nem_cfg["blast_db"] = nr_db
+                        if cfg["taxonomy_blast"].get("nr_mmseqs_binary"):
+                            nem_cfg["mmseqs_binary"] = cfg["taxonomy_blast"]["nr_mmseqs_binary"]
+                        try:
+                            info(f"  NR protein ({len(nem_records):,} seqs): {nr_db}")
+                            nem_batch_info: list = [0, 0]
+                            with BlastTicker(
+                                f"Escalation NR (no-match)  ({len(nem_records):,} seqs)",
+                                output_file=out_esc_nem,
+                                total_queries=len(nem_records),
+                                avg_hsp=5.0,
+                            ) as nem_ticker:
+                                nem_ticker.batch_info = nem_batch_info
+                                run_mmseqs(esc_nem_fasta, nr_db, out_esc_nem, nem_cfg,
+                                           batch_info=nem_batch_info)
+                        except Exception as e:
+                            warn(f"Escalation NR (no-match) search failed: {e}")
+                    if os.path.exists(out_esc_nem):
+                        nem_rescued = parse_tax_blast_escalation_genus_species(
+                            out_esc_nem, ann, cfg, taxdb, "nr_no_expected_match"
+                        )
+                        info(f"    NR protein rescued: {nem_rescued:,} records")
+                elif no_match_keys and not nr_db:
+                    warn("escalate_no_expected_match enabled but taxonomy_blast.nr_protein_db"
+                         " not set — skipping")
+                else:
+                    info("  No-expected-match escalation: no records to re-verify")
         else:
             warn("taxonomy_blast enabled but taxonomy_blast.blast_db not set — skipping")
 
