@@ -11,6 +11,15 @@ from spinner.fasta import parse_fasta
 from spinner.pipeline import run_pipeline
 
 
+def _three_state_config_file(tmp_path: Path) -> Path:
+    """A minimal config YAML (deep-merged over DEFAULT_CONFIG by load_config()) that
+    opts back into the legacy KEEP/REVIEW/REJECT decision model."""
+    import yaml
+    p = tmp_path / "three_state.yml"
+    p.write_text(yaml.safe_dump({"decision_rules": {"three_state_mode": True}}), encoding="utf-8")
+    return p
+
+
 def _args(fasta_paths, outprefix, config="", species_kingdom="",
           regions_config="", adapters="", bad_keywords="", keep_temp=False):
     """Create a minimal argparse.Namespace suitable for run_pipeline()."""
@@ -39,7 +48,10 @@ def test_minimal_filter_run(
     tmp_path, fasta_file, adapters_file, bad_keywords_file,
     species_kingdom_file, regions_file
 ):
-    """filter subcommand should write decisions.tsv and split FASTAs."""
+    """filter subcommand should write decisions.tsv and split FASTAs. Accept/reject-only
+    is the real default since 2026-08-30 -- .review.fasta is no longer written unless
+    decision_rules.three_state_mode is on (see test_minimal_filter_run_three_state_mode
+    below for that case)."""
     outprefix = str(tmp_path / "out")
     args = _args(
         [str(fasta_file)],
@@ -48,6 +60,30 @@ def test_minimal_filter_run(
         adapters=str(adapters_file),
         bad_keywords=str(bad_keywords_file),
         regions_config=str(regions_file),
+    )
+    run_pipeline(args, filter_mode=True)
+
+    assert Path(outprefix + ".decisions.tsv").exists()
+    assert Path(outprefix + ".keep.fasta").exists()
+    assert not Path(outprefix + ".review.fasta").exists()
+    assert Path(outprefix + ".reject.fasta").exists()
+
+
+def test_minimal_filter_run_three_state_mode(
+    tmp_path, fasta_file, adapters_file, bad_keywords_file,
+    species_kingdom_file, regions_file
+):
+    """Same real pipeline, decision_rules.three_state_mode: true -- .review.fasta is
+    written again, exactly like every Spinner release before 2026-08-30."""
+    outprefix = str(tmp_path / "out")
+    args = _args(
+        [str(fasta_file)],
+        outprefix,
+        species_kingdom=str(species_kingdom_file),
+        adapters=str(adapters_file),
+        bad_keywords=str(bad_keywords_file),
+        regions_config=str(regions_file),
+        config=str(_three_state_config_file(tmp_path)),
     )
     run_pipeline(args, filter_mode=True)
 

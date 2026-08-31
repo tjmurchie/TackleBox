@@ -1,5 +1,20 @@
 # Spinner Changelog
 
+## 2026-08-30 (follow-up: report/console output now matches the accept/reject-only default)
+
+Same-day follow-up to the decision-model change below. `reporting.py`
+(`write_summary_tsv`/`write_summary_html`/`write_split_fastas`) and `pipeline.py`'s
+console output (`_print_final_summary`, the run-mode banner, the numbered "what to do
+next" hints) now take/derive `three_state_mode` and stop showing REVIEW-related
+output entirely in the real default: no more permanently-empty REVIEW stat box/table
+column/summary line, and `.review.fasta` is no longer written at all (previously always
+written, always empty). `three_state_mode: true` restores every REVIEW-related output
+exactly as it was before. `Spinner report` (`report_from_decisions`, which regenerates a
+report from an existing decisions.tsv with no original cfg available) auto-detects which
+mode to render by checking whether any real REVIEW decision is present in the file.
+
+183 passed (was 182), ruff clean.
+
 ## 2026-08-30 (real behavior change: accept/reject only is now the default -- REVIEW retired)
 
 Spinner's decision model changes from three states (KEEP/REVIEW/REJECT) to two

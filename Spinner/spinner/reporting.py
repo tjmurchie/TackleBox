@@ -52,7 +52,10 @@ def _species_coverage(ann: Dict[str, Annotation]) -> List[tuple]:
     return rows
 
 
-def write_summary_tsv(ann: Dict[str, Annotation], outprefix: str) -> None:
+def write_summary_tsv(ann: Dict[str, Annotation], outprefix: str, three_state_mode: bool = False) -> None:
+    """*three_state_mode* controls whether a REVIEW line is emitted at all -- in the
+    real accept/reject-only default (2026-08-30), REVIEW never occurs, so omitting it
+    here avoids a permanently-zero row rather than displaying one unconditionally."""
     counts = Counter(a.decision for a in ann.values())
     reasons = Counter(r for a in ann.values() for r in a.reasons)
     by_class = Counter((a.decision, a.marker_class) for a in ann.values())
@@ -60,9 +63,10 @@ def write_summary_tsv(ann: Dict[str, Annotation], outprefix: str) -> None:
     kw_hits = Counter(a.bad_keyword for a in ann.values() if a.bad_keyword_hit)
     taxonomy_counts = Counter(a.taxonomy_status for a in ann.values())
 
+    decision_keys = ("KEEP", "REVIEW", "REJECT") if three_state_mode else ("KEEP", "REJECT")
     with open(outprefix + ".summary.tsv", "w", encoding="utf-8") as out:
         out.write("section\tkey\tvalue\n")
-        for k in ("KEEP", "REVIEW", "REJECT"):
+        for k in decision_keys:
             out.write(f"decision\t{k}\t{counts.get(k, 0)}\n")
         for (d, c), n in sorted(by_class.items()):
             out.write(f"decision_by_class\t{d}:{c}\t{n}\n")
@@ -121,7 +125,12 @@ def _table(headers: list, rows: list, row_class_fn=None) -> str:
     return f"<table><tr>{th}</tr>{body}</table>"
 
 
-def write_summary_html(ann: Dict[str, Annotation], outprefix: str, version: str = "") -> None:
+def write_summary_html(ann: Dict[str, Annotation], outprefix: str, version: str = "",
+                        three_state_mode: bool = False) -> None:
+    """*three_state_mode* controls whether REVIEW gets its own stat box / table column
+    at all -- in the real accept/reject-only default (2026-08-30), REVIEW never occurs,
+    so omitting it here avoids a permanently-empty box/column rather than displaying
+    one unconditionally."""
     from spinner import VERSION
     ver = version or VERSION
     counts = Counter(a.decision for a in ann.values())
@@ -157,7 +166,7 @@ def write_summary_html(ann: Dict[str, Annotation], outprefix: str, version: str 
 
     # Class × decision table.
     classes = ["Mito", "Plastid", "NucMark", "Other"]
-    decisions = ["KEEP", "REVIEW", "REJECT"]
+    decisions = ["KEEP", "REVIEW", "REJECT"] if three_state_mode else ["KEEP", "REJECT"]
     class_rows = [
         [klass] + [by_class.get((d, klass), 0) for d in decisions]
         for klass in classes
@@ -172,9 +181,10 @@ def write_summary_html(ann: Dict[str, Annotation], outprefix: str, version: str 
         outprefix + ".decisions.tsv",
         outprefix + ".summary.tsv",
         outprefix + ".keep.fasta",
-        outprefix + ".review.fasta",
-        outprefix + ".reject.fasta",
     ]
+    if three_state_mode:
+        out_files.append(outprefix + ".review.fasta")
+    out_files.append(outprefix + ".reject.fasta")
 
     def stat_box(decision: str) -> str:
         n = counts.get(decision, 0)
@@ -196,7 +206,7 @@ def write_summary_html(ann: Dict[str, Annotation], outprefix: str, version: str 
         "<h2>Decision summary</h2>",
         '<div class="stat-wrap">',
         stat_box("KEEP"),
-        stat_box("REVIEW"),
+        *([stat_box("REVIEW")] if three_state_mode else []),
         stat_box("REJECT"),
         "</div>",
         "<h2>Decisions by marker class</h2>",
@@ -239,11 +249,15 @@ def write_split_fastas(
     outprefix: str,
     cfg: dict,
 ) -> None:
-    """Write keep / review / reject FASTA files."""
+    """Write keep / review / reject FASTA files. In the real accept/reject-only default
+    (2026-08-30), no record is ever decided REVIEW, so .review.fasta is skipped entirely
+    unless decision_rules.three_state_mode is on -- an empty, permanently-unused file
+    would otherwise be written every run."""
+    three_state_mode = bool(cfg.get("decision_rules", {}).get("three_state_mode", False))
     by_key = {r.id: r for r in records}
     tasks = [
         ("KEEP", "keep", True),
-        ("REVIEW", "review", cfg.get("run", {}).get("write_review_fasta", True)),
+        ("REVIEW", "review", three_state_mode and cfg.get("run", {}).get("write_review_fasta", True)),
         ("REJECT", "reject", cfg.get("run", {}).get("write_reject_fasta", True)),
     ]
     for decision, suffix, enabled in tasks:
@@ -319,5 +333,10 @@ def report_from_decisions(decisions_path: str, outprefix: str) -> None:
             )
             ann[a.record_key] = a
 
-    write_summary_tsv(ann, outprefix)
-    write_summary_html(ann, outprefix)
+    # No original cfg is available here (this regenerates a report from an
+    # already-written decisions.tsv) -- infer display mode from the data itself: any
+    # real REVIEW record in the file is an unambiguous signal it came from a
+    # three_state_mode run, so the regenerated report should render the same way.
+    three_state_mode = any(a.decision == "REVIEW" for a in ann.values())
+    write_summary_tsv(ann, outprefix, three_state_mode=three_state_mode)
+    write_summary_html(ann, outprefix, three_state_mode=three_state_mode)

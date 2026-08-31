@@ -110,13 +110,19 @@ def _print_step_banner(label: str, enabled: bool, reason: str = "") -> None:
 
 
 def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
-                          elapsed: float, steps: dict) -> None:
-    """Print a detailed end-of-run summary to stderr."""
+                          elapsed: float, steps: dict, three_state_mode: bool = False) -> None:
+    """Print a detailed end-of-run summary to stderr.
+
+    *three_state_mode* controls whether REVIEW gets its own line/column at all -- in the
+    real accept/reject-only default (2026-08-30), REVIEW never occurs, so omitting it
+    here avoids permanently-zero output rather than displaying it unconditionally.
+    """
     counts = Counter(a.decision for a in ann.values())
     n_total = len(ann)
     keep   = counts.get("KEEP", 0)
     review = counts.get("REVIEW", 0)
     reject = counts.get("REJECT", 0)
+    decision_cols = ("KEEP", "REVIEW", "REJECT") if three_state_mode else ("KEEP", "REJECT")
 
     stage(f"Run complete  [{fmt_seconds(elapsed)} total]")
 
@@ -124,7 +130,8 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
     pct = lambda n: f"{100 * n / n_total:.1f}%" if n_total else "0%"
     info(f"  {'Records processed:':<28} {n_total:,}")
     info(f"  {'KEEP:':<28} {keep:>7,}  ({pct(keep)})")
-    info(f"  {'REVIEW:':<28} {review:>7,}  ({pct(review)})")
+    if three_state_mode:
+        info(f"  {'REVIEW:':<28} {review:>7,}  ({pct(review)})")
     info(f"  {'REJECT:':<28} {reject:>7,}  ({pct(reject)})")
 
     # Class × decision breakdown
@@ -134,11 +141,11 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
     classes = sorted({k for k, _ in by_class})
     if classes:
         section("Decisions by marker class")
-        header = f"  {'Class':<14}" + "".join(f"  {d:<8}" for d in ("KEEP", "REVIEW", "REJECT"))
+        header = f"  {'Class':<14}" + "".join(f"  {d:<8}" for d in decision_cols)
         info(header)
         for cls in classes:
             row = (f"  {cls:<14}" +
-                   "".join(f"  {by_class.get((cls, d), 0):<8}" for d in ("KEEP", "REVIEW", "REJECT")))
+                   "".join(f"  {by_class.get((cls, d), 0):<8}" for d in decision_cols))
             info(row)
 
     # Kingdom breakdown
@@ -148,11 +155,11 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
     kingdoms = sorted({k for k, _ in by_kingdom})
     if len(kingdoms) > 1:
         section("Decisions by kingdom")
-        header = f"  {'Kingdom':<14}" + "".join(f"  {d:<8}" for d in ("KEEP", "REVIEW", "REJECT"))
+        header = f"  {'Kingdom':<14}" + "".join(f"  {d:<8}" for d in decision_cols)
         info(header)
         for kd in kingdoms:
             row = (f"  {kd:<14}" +
-                   "".join(f"  {by_kingdom.get((kd, d), 0):<8}" for d in ("KEEP", "REVIEW", "REJECT")))
+                   "".join(f"  {by_kingdom.get((kd, d), 0):<8}" for d in decision_cols))
             info(row)
 
     # Top reasons
@@ -229,11 +236,10 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
         (outprefix + ".run_config.resolved.yml",  "Full resolved config snapshot"),
     ]
     if filter_mode:
-        outputs += [
-            (outprefix + ".keep.fasta",   f"High-confidence records ({keep:,})"),
-            (outprefix + ".review.fasta", f"Records to inspect manually ({review:,})"),
-            (outprefix + ".reject.fasta", f"Rejected records — kept for audit ({reject:,})"),
-        ]
+        outputs.append((outprefix + ".keep.fasta", f"High-confidence records ({keep:,})"))
+        if three_state_mode:
+            outputs.append((outprefix + ".review.fasta", f"Records to inspect manually ({review:,})"))
+        outputs.append((outprefix + ".reject.fasta", f"Rejected records — kept for audit ({reject:,})"))
     for path, desc in outputs:
         exists = "+" if os.path.exists(path) else "!"
         info(f"  [{exists}] {path}")
@@ -242,21 +248,28 @@ def _print_final_summary(ann: dict, outprefix: str, filter_mode: bool,
     # Next steps hints
     section("What to do next")
     if filter_mode:
+        step_n = 2
         info("  1. Open summary.html in a browser to review counts, classes, and top reasons.")
-        info("  2. Inspect review.fasta — these records may be salvageable after manual check.")
-        info("  3. Investigate any unexpected rejections with the explain subcommand:")
+        if three_state_mode:
+            info(f"  {step_n}. Inspect review.fasta — these records may be salvageable after manual check.")
+            step_n += 1
+        info(f"  {step_n}. Investigate any unexpected rejections with the explain subcommand:")
         info(f"       ./Spinner explain --decisions {outprefix}.decisions.tsv --accession ACCESSION")
-        info("  4. Regenerate the HTML report after manual TSV edits:")
+        step_n += 1
+        info(f"  {step_n}. Regenerate the HTML report after manual TSV edits:")
         info(f"       ./Spinner report --decisions {outprefix}.decisions.tsv --outprefix <prefix>")
+        step_n += 1
         if not steps.get("taxonomy_blast"):
-            info("  5. Add taxonomy sanity checking by re-running with spinner_with_nt_blast.yml")
+            info(f"  {step_n}. Add taxonomy sanity checking by re-running with spinner_with_nt_blast.yml")
             info("     (requires blastn + NCBI nt database)")
+            step_n += 1
         if not steps.get("cluster"):
-            info("  6. Reduce haplotype redundancy by enabling cluster: true in your config")
+            info(f"  {step_n}. Reduce haplotype redundancy by enabling cluster: true in your config")
             info("     (requires vsearch)")
     else:
+        fasta_kinds = "keep/review/reject" if three_state_mode else "keep/reject"
         info("  1. Review decisions.tsv — no FASTAs were written (audit mode).")
-        info("  2. Re-run with the 'filter' subcommand to produce keep/review/reject FASTAs:")
+        info(f"  2. Re-run with the 'filter' subcommand to produce {fasta_kinds} FASTAs:")
         info("       ./Spinner filter [same args] --outprefix <prefix>")
 
 
@@ -347,7 +360,8 @@ def run_pipeline(args, filter_mode: bool) -> None:
 
     # --- Print run header ---
     stage(f"Spinner {VERSION}  |  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    mode_label = ("filter (keep/review/reject FASTAs will be written)"
+    _fasta_kinds = "keep/review/reject" if cfg.get("decision_rules", {}).get("three_state_mode", False) else "keep/reject"
+    mode_label = (f"filter ({_fasta_kinds} FASTAs will be written)"
                   if filter_mode else "audit (decisions only, no FASTA output)")
     info(f"  Mode:    {mode_label}")
     info(f"  Config:  {getattr(args, 'config', 'defaults') or 'defaults'}")
@@ -837,19 +851,21 @@ def run_pipeline(args, filter_mode: bool) -> None:
              if not cfg.get("capping", {}).get("rescue_sole_representatives", False)
              else "  All identified species already have ≥1 KEEP record")
 
+    three_state_mode = bool(cfg.get("decision_rules", {}).get("three_state_mode", False))
     section("Writing output files")
     write_decisions(ann, outprefix + ".decisions.tsv")
     info(f"  decisions.tsv  ({len(ann):,} rows)")
-    write_summary_tsv(ann, outprefix)
+    write_summary_tsv(ann, outprefix, three_state_mode=three_state_mode)
     info("  summary.tsv")
     if steps.get("report", True):
-        write_summary_html(ann, outprefix)
+        write_summary_html(ann, outprefix, three_state_mode=three_state_mode)
         info("  summary.html")
     if filter_mode:
         write_split_fastas(records, ann, outprefix, cfg)
         final = Counter(a.decision for a in ann.values())
         info(f"  keep.fasta   ({final.get('KEEP', 0):,} records)")
-        info(f"  review.fasta ({final.get('REVIEW', 0):,} records)")
+        if three_state_mode:
+            info(f"  review.fasta ({final.get('REVIEW', 0):,} records)")
         info(f"  reject.fasta ({final.get('REJECT', 0):,} records)")
     info(f"  Scoring + writing complete  [{fmt_seconds(time.time() - t0)}]")
 
@@ -858,4 +874,5 @@ def run_pipeline(args, filter_mode: bool) -> None:
         _cleanup_temp(temp_files)
 
     # --- detailed final summary ---
-    _print_final_summary(ann, outprefix, filter_mode, time.time() - run_start, steps)
+    _print_final_summary(ann, outprefix, filter_mode, time.time() - run_start, steps,
+                         three_state_mode=three_state_mode)
