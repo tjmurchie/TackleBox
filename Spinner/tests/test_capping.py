@@ -98,8 +98,11 @@ def test_cap_different_species_independent():
     assert "cap_exceeded" not in ann["SP2A"].reasons
 
 
-def test_cap_action_changes_decision_to_review():
-    """cap_action=review should change KEEP -> REVIEW for cap-exceeded records."""
+def test_cap_action_review_is_soft_penalty_only_2026_08_30():
+    """cap_action=review (2026-08-30 redesign): cap_refs() itself no longer sets any
+    advisory decision for cap-exceeded records -- it only adds the "cap_exceeded" reason
+    and leaves the authoritative call to the following score_decide() pass. Confirmed
+    here directly on cap_refs()'s own output, before any re-scoring."""
     cfg = _cfg(
         max_per_species_marker={"Mito": 1, "Plastid": 20, "NucMark": 10, "Other": 5},
         cap_action="review",
@@ -108,8 +111,37 @@ def test_cap_action_changes_decision_to_review():
     ann = make_ann_dict(*recs)
     cap_refs(ann, cfg)
     exceeded = [a for a in ann.values() if "cap_exceeded" in a.reasons]
+    assert len(exceeded) == 2
     for a in exceeded:
-        assert a.decision == "REVIEW"
+        assert "cap_exceeded_reject" not in a.reasons
+        # cap_refs() left the pre-existing (pre-cap) decision alone -- KEEP, from
+        # _make_mito()'s own construction -- rather than forcing a specific value.
+        assert a.decision == "KEEP"
+
+
+def test_cap_action_review_full_sequence_default_mode_is_genuinely_soft():
+    """Full real pipeline order (score -> cap -> re-score), accept/reject-only default:
+    cap_action='review' is now genuinely SOFT -- a cap-exceeded record's "cap_exceeded"
+    penalty (-30) on an otherwise-clean starting score of 100 lands at 70, still >=
+    keep_min (65), so it reaches KEEP anyway. This is a real, deliberate behavior change
+    from three_state_mode (where a review_reason unconditionally blocked KEEP regardless
+    of score) -- Tyler's own explicit choice, 2026-08-30: cap_action='review' no longer
+    guarantees a cap-exceeded record won't reach KEEP; project.yml authors who want
+    capping to be a hard, enforced limit should use cap_action='reject' instead, which is
+    unaffected by this redesign (cap_exceeded_reject stays a real hard_reject_reason)."""
+    cfg = _cfg(
+        max_per_species_marker={"Mito": 1, "Plastid": 20, "NucMark": 10, "Other": 5},
+        cap_action="review",
+    )
+    recs = [_make_mito(f"R{i}") for i in range(3)]
+    ann = make_ann_dict(*recs)
+    _run_full_cap_sequence(ann, cfg)
+    exceeded = [a for a in ann.values() if "cap_exceeded" in a.reasons]
+    assert len(exceeded) == 2
+    for a in exceeded:
+        assert a.decision_score == 70
+        assert a.decision == "KEEP"
+        assert "cap_exceeded_reject" not in a.reasons  # soft, not hard-rejected
 
 
 def test_cap_uncapped_classes_not_capped():
@@ -136,8 +168,14 @@ def _make_review_mito(key: str, species: str = "Rangifer tarandus", score: int =
 
 
 def _rescue_cfg(**overrides):
+    """three_state_mode: True since these tests hand-construct records already sitting
+    at decision == "REVIEW" (via _make_review_mito) to exercise rescue_sole_representatives()
+    in isolation -- REVIEW only exists as a rescue candidate state in three_state_mode; see
+    test_rescue_default_mode_promotes_best_non_hard_rejected_reject below for the real
+    accept/reject-only default's own rescue path."""
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["capping"]["rescue_sole_representatives"] = True
+    cfg["decision_rules"]["three_state_mode"] = True
     cfg["capping"].update(overrides)
     return cfg
 
@@ -187,6 +225,49 @@ def test_rescue_disabled_when_explicitly_false():
     rescued = rescue_sole_representatives(ann, cfg)
     assert rescued == 0
     assert ann["R1"].decision == "REVIEW"
+
+
+# ---------------------------------------------------------------------------
+# Rescue in the accept/reject-only default mode (2026-08-30): there's no REVIEW
+# state to rescue FROM, so the candidate pool is REJECT-but-not-hard-rejected.
+# ---------------------------------------------------------------------------
+
+def _make_rejected_mito(key: str, species: str = "Rangifer tarandus", score: int = 60,
+                         reasons: list | None = None) -> Annotation:
+    a = _make_mito(key, species, score)
+    a.decision = "REJECT"
+    for r in (reasons or []):
+        a.add_reason(r)
+    return a
+
+
+def test_rescue_default_mode_promotes_best_non_hard_rejected_reject():
+    """Species with 0 KEEP and >=1 score-based (not hard-rejected) REJECT should have
+    its best record rescued -- the accept/reject-only equivalent of the three_state_mode
+    REVIEW-rescue path."""
+    r1 = _make_rejected_mito("R1", score=60, reasons=["taxonomy_not_checked"])
+    r2 = _make_rejected_mito("R2", score=50, reasons=["taxonomy_not_checked"])
+    ann = make_ann_dict(r1, r2)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)  # three_state_mode left at its real default: False
+    cfg["capping"]["rescue_sole_representatives"] = True
+    rescued = rescue_sole_representatives(ann, cfg)
+    assert rescued == 1
+    assert ann["R1"].decision == "KEEP"
+    assert "sole_representative" in ann["R1"].reasons
+    assert ann["R2"].decision == "REJECT"
+
+
+def test_rescue_default_mode_never_promotes_hard_rejected_record():
+    """A record REJECTed for a real structural reason (contamination, chimera,
+    duplicate, adapter/vector hit) must never be rescued just because it's the only
+    candidate for its species -- scarcity doesn't excuse a genuinely bad sequence."""
+    hard_rejected = _make_rejected_mito("BAD1", score=0, reasons=["adapter_internal"])
+    ann = make_ann_dict(hard_rejected)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["capping"]["rescue_sole_representatives"] = True
+    rescued = rescue_sole_representatives(ann, cfg)
+    assert rescued == 0
+    assert ann["BAD1"].decision == "REJECT"
 
 
 # ---------------------------------------------------------------------------
@@ -240,15 +321,17 @@ def test_cap_action_reject_with_zero_cap_hard_rejects_and_is_never_rescued():
     assert "sole_representative" not in a.reasons
 
 
-def test_cap_action_review_produces_identical_decisions_to_before_the_fix():
-    """cap_action='review' (the default used by every other real config) must
-    behave exactly as before: only the soft 'cap_exceeded' review reason is
-    added, KEEP is downgraded to REVIEW, and the new 'cap_exceeded_reject'
-    reason is never added — this is the critical no-regression guard for
-    every other real Spinner user.
+def test_cap_action_review_produces_identical_decisions_to_before_the_fix_three_state_mode():
+    """cap_action='review' in three_state_mode (opt-in, for anyone who wants the old
+    behavior back) must still behave exactly as it did before the 2026-08-30 redesign:
+    only the soft 'cap_exceeded' review reason is added, KEEP is downgraded to REVIEW,
+    and 'cap_exceeded_reject' is never added. See
+    test_cap_action_review_full_sequence_default_mode_downgrades_to_reject above for the
+    real accept/reject-only default's own equivalent behavior (REJECT, not REVIEW).
     """
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["steps"]["cap_references"] = True
+    cfg["decision_rules"]["three_state_mode"] = True
     cfg["capping"]["max_per_species_marker"] = {
         "Mito": 1, "Plastid": 20, "NucMark": 10, "Other": 5,
     }

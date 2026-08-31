@@ -81,12 +81,17 @@ def cap_refs(ann: Dict[str, Annotation], cfg: dict) -> None:
                     # cap_action: "reject" survives that recomputation.
                     a.add_reason("cap_exceeded_reject")
                     a.decision = "REJECT"
-                elif a.decision == "KEEP":
-                    a.decision = "REVIEW"
+                # cap_action == "review" (default): soft-penalty-only, 2026-08-30 --
+                # adding the plain "cap_exceeded" reason above is sufficient; the
+                # following score_decide() call is the sole authority on the real
+                # decision either way (three_state_mode blocks KEEP via review_reasons
+                # membership; accept/reject-only mode just applies cap_exceeded's score
+                # penalty), so no advisory decision override belongs here at all.
 
 
 def rescue_sole_representatives(ann: Dict[str, Annotation], cfg: dict) -> int:
-    """Promote the best REVIEW record to KEEP for species with zero KEEP records.
+    """Promote the best available non-hard-rejected record to KEEP for species with
+    zero KEEP records.
 
     For ancient DNA metagenomics, the only NCBI reference for a rare or extinct
     species may be imperfect (high N, no BLAST match, etc.).  Losing it entirely
@@ -98,9 +103,27 @@ def rescue_sole_representatives(ann: Dict[str, Annotation], cfg: dict) -> int:
     Activated by setting ``capping.rescue_sole_representatives: true`` in config.
     The rescued record receives reason ``sole_representative`` and its decision
     is set to KEEP regardless of score.
+
+    Candidate pool depends on ``decision_rules.three_state_mode``:
+
+    - **Three-state mode** (legacy): candidates are records already sitting at
+      ``REVIEW`` -- unchanged from this function's original behavior. A record
+      hard-capped to REJECT (``cap_action: "reject"``, via the distinct
+      ``cap_exceeded_reject`` hard-reject reason) is already excluded, since it
+      never reaches ``REVIEW`` in the first place.
+    - **Accept/reject-only mode** (default since 2026-08-30): there is no REVIEW
+      state to rescue FROM, so a species whose sole candidate merely scored below
+      ``keep_min`` would otherwise be lost entirely. Candidates here are records at
+      ``REJECT`` that were NOT hard-rejected (``decision_rules.hard_reject_reasons``)
+      -- i.e. rejected purely on score, not for a structural reason (contamination,
+      chimera, duplicate, adapter/vector hit) that a human wouldn't want rescued
+      regardless of scarcity.
     """
     if not cfg.get("capping", {}).get("rescue_sole_representatives", False):
         return 0
+
+    three_state_mode = bool(cfg.get("decision_rules", {}).get("three_state_mode", False))
+    hard_reject = set(cfg.get("decision_rules", {}).get("hard_reject_reasons", []))
 
     # Group by (species, marker_class) — same grouping as cap_refs().
     groups: Dict[tuple, list] = defaultdict(list)
@@ -116,9 +139,15 @@ def rescue_sole_representatives(ann: Dict[str, Annotation], cfg: dict) -> int:
         if keep_count > 0:
             continue  # already has at least one KEEP — no rescue needed
 
-        candidates = [a for a in items if a.decision == "REVIEW"]
+        if three_state_mode:
+            candidates = [a for a in items if a.decision == "REVIEW"]
+        else:
+            candidates = [
+                a for a in items
+                if a.decision == "REJECT" and not (set(a.reasons) & hard_reject)
+            ]
         if not candidates:
-            continue  # all REJECTED — nothing safe to rescue
+            continue  # nothing safe to rescue (all hard-rejected, or none at all)
 
         # Pick the best candidate: highest score, then longest, then lowest N.
         best = max(

@@ -198,6 +198,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "fcs_gx_review",
         ],
         "score_thresholds": {"keep_min": 65, "review_min": 30},
+        # Real design change, 2026-08-30: Spinner's job is now cheap, fast triage --
+        # Fillet's bait-eval (a separate, comprehensive, final identity/contamination
+        # check run on the actual finished baits) is the authoritative last word, so
+        # Spinner no longer needs a middle "REVIEW" tier to force manual review before
+        # trusting its own calls. Default is now accept/reject only: hard_reject_reasons
+        # still always REJECT; everything else is a single score_thresholds.keep_min
+        # cutoff (review_reasons still apply their score penalty, just no longer block
+        # KEEP on their own). Set true to restore the old 3-state KEEP/REVIEW/REJECT
+        # behavior (score_thresholds.review_min only has an effect in that mode).
+        "three_state_mode": False,
     },
     "scoring": {
         "start": 100,

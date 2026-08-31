@@ -31,6 +31,16 @@ def _cfg():
     return copy.deepcopy(DEFAULT_CONFIG)
 
 
+def _cfg_three_state():
+    """Legacy KEEP/REVIEW/REJECT mode -- accept/reject-only is the real default since
+    2026-08-30 (Fillet's bait-eval is now the authoritative final check; Spinner itself
+    only needs cheap triage), but three_state_mode: true must still work correctly for
+    anyone who opts back into it."""
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["decision_rules"]["three_state_mode"] = True
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # Hard-reject reasons -> REJECT
 # ---------------------------------------------------------------------------
@@ -84,29 +94,69 @@ def test_hard_reject_length_below_min():
 # Review reasons -> REVIEW (not KEEP, even if score is high)
 # ---------------------------------------------------------------------------
 
-def test_review_from_adapter_terminal():
+def test_review_from_adapter_terminal_three_state_mode():
     a = make_ann()
     a.add_reason("adapter_terminal")
     ann = make_ann_dict(a)
-    score_decide(ann, _cfg())
+    score_decide(ann, _cfg_three_state())
     # Score starts at 100, adapter_terminal = -40 -> 60; review reason present.
     assert ann["TEST.1"].decision == "REVIEW"
 
 
-def test_review_from_bad_keyword_review():
+def test_review_from_bad_keyword_review_three_state_mode():
     a = make_ann()
     a.add_reason("bad_keyword_review")
     ann = make_ann_dict(a)
-    score_decide(ann, _cfg())
+    score_decide(ann, _cfg_three_state())
     assert ann["TEST.1"].decision == "REVIEW"
 
 
-def test_review_from_cap_exceeded():
+def test_review_from_cap_exceeded_three_state_mode():
     a = make_ann()
     a.add_reason("cap_exceeded")
     ann = make_ann_dict(a)
-    score_decide(ann, _cfg())
+    score_decide(ann, _cfg_three_state())
     assert ann["TEST.1"].decision == "REVIEW"
+
+
+# ---------------------------------------------------------------------------
+# Accept/reject-only default (2026-08-30): the same reasons above no longer
+# block KEEP -- only the single keep_min score threshold decides.
+# ---------------------------------------------------------------------------
+
+def test_default_mode_adapter_terminal_alone_still_keeps_if_score_clears_threshold():
+    a = make_ann()
+    a.add_reason("adapter_terminal")  # -40 -> score 60, below keep_min=65
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["TEST.1"].decision == "REJECT"  # score-based, not review-blocked
+
+
+def test_default_mode_bad_keyword_review_no_longer_blocks_keep():
+    a = make_ann()
+    a.add_reason("bad_keyword_review")  # -30 -> score 70, clears keep_min=65
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["TEST.1"].decision == "KEEP"
+
+
+def test_default_mode_cap_exceeded_no_longer_blocks_keep():
+    a = make_ann()
+    a.add_reason("cap_exceeded")  # -30 -> score 70, clears keep_min=65
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["TEST.1"].decision == "KEEP"
+
+
+def test_default_mode_has_no_review_outcome_ever():
+    """Accept/reject only, by construction -- no reason combination should ever
+    produce REVIEW under the default config."""
+    a = make_ann()
+    a.add_reason("taxonomy_not_checked")
+    a.add_reason("cluster_nonrepresentative")
+    ann = make_ann_dict(a)
+    score_decide(ann, _cfg())
+    assert ann["TEST.1"].decision in ("KEEP", "REJECT")
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +225,28 @@ def test_annotation_to_decision_clean(tmp_path):
     assert ann["CLEAN.1"].decision == "KEEP"
 
 
-def test_annotation_to_decision_all_n(tmp_path):
+def test_annotation_to_decision_all_n_three_state_mode(tmp_path):
     """An all-N record is not hard-rejected: n_fraction_high is a score penalty.
     The 80-N sequence also triggers homopolymer_long (run of 80 > max 60), which
-    is a review_reason -> REVIEW.  The record is preserved for manual inspection,
-    not silently discarded.
+    is a review_reason -> REVIEW in three_state_mode. The record is preserved for
+    manual inspection, not silently discarded.
     """
+    p = tmp_path / "t.fasta"
+    p.write_text(">ALLN.1 Salix arctica ITS1\n" + "N" * 80 + "\n")
+    recs = parse_fasta([str(p)])
+    cfg = _cfg_three_state()
+    cfg["steps"]["adapter_screen"] = False
+    cfg["steps"]["bad_keyword_screen"] = False
+    ann = annotate(recs, cfg)
+    score_decide(ann, cfg)
+    assert "n_fraction_high" in ann["ALLN.1"].reasons
+    assert ann["ALLN.1"].decision == "REVIEW"
+
+
+def test_annotation_to_decision_all_n_default_mode(tmp_path):
+    """Same record, accept/reject-only default: still not hard-rejected, but no
+    REVIEW tier exists -- the score-penalized record is REJECTed outright (still
+    preserved in reject.fasta for audit, not silently discarded from the run)."""
     p = tmp_path / "t.fasta"
     p.write_text(">ALLN.1 Salix arctica ITS1\n" + "N" * 80 + "\n")
     recs = parse_fasta([str(p)])
@@ -190,7 +256,7 @@ def test_annotation_to_decision_all_n(tmp_path):
     ann = annotate(recs, cfg)
     score_decide(ann, cfg)
     assert "n_fraction_high" in ann["ALLN.1"].reasons
-    assert ann["ALLN.1"].decision == "REVIEW"
+    assert ann["ALLN.1"].decision == "REJECT"
 
 
 # ---------------------------------------------------------------------------
@@ -218,17 +284,20 @@ def test_length_exempt_complete_genome_reaches_keep():
     assert ann["EU153454.1"].decision == "KEEP"
 
 
-def test_same_score_with_old_taxonomy_not_checked_reason_still_forces_review():
+def test_same_score_with_old_taxonomy_not_checked_reason_still_forces_review_three_state_mode():
     """Contrast case, same file: a record that was genuinely SUBMITTED to the taxonomy
     search and got no hit (real "taxonomy_not_checked", not a length exemption) must
-    still be correctly blocked from auto-KEEP at the identical score -- the fix must not
-    weaken review-forcing for genuinely-unverified records, only for confidently-exempt
-    ones."""
+    still be correctly blocked from auto-KEEP at the identical score in three_state_mode
+    -- the fix must not weaken review-forcing for genuinely-unverified records, only for
+    confidently-exempt ones. (Accept/reject-only, the real default since 2026-08-30, no
+    longer has this review-blocking behavior at all -- see test_decisions.py's
+    default-mode tests above; three_state_mode remains available for anyone who wants
+    the old behavior back.)"""
     a = make_ann(accession="SHORT.1", record_key="SHORT.1", length=500)
     a.add_reason("complete_organelle")     # +5
     a.add_reason("taxonomy_not_checked")   # 0
     a.add_reason("cluster_representative")  # +5
     ann = make_ann_dict(a)
-    score_decide(ann, _cfg())
+    score_decide(ann, _cfg_three_state())
     assert ann["SHORT.1"].decision_score == 110
     assert ann["SHORT.1"].decision == "REVIEW"

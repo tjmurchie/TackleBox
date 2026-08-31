@@ -1,5 +1,42 @@
 # Spinner Changelog
 
+## 2026-08-30 (real behavior change: accept/reject only is now the default -- REVIEW retired)
+
+Spinner's decision model changes from three states (KEEP/REVIEW/REJECT) to two
+(KEEP/REJECT) by default. Motivation: Fillet's `bait-eval` (a separate, comprehensive
+identity/capture-competition check run against the actual finished baits, against the
+full NT database) is now the authoritative final check in this pipeline -- Spinner's own
+job is cheap, fast triage, not the last word, so it no longer needs a REVIEW tier forcing
+manual attention before trusting its own calls.
+
+**What changed** (`decisions.py::score_decide()`): `hard_reject_reasons` still always
+REJECT, unchanged. Every other reason in `review_reasons` still applies its existing
+score penalty, but no longer blocks KEEP on its own -- a single `score_thresholds.keep_min`
+cutoff decides KEEP vs REJECT. Set the new `decision_rules.three_state_mode: true` to
+restore the exact old behavior (`score_thresholds.review_min` only has an effect in that
+mode).
+
+**Real, deliberate side effect worth knowing about**: `cap_action: "review"` (one of
+capping's two modes) is now genuinely soft in the default mode -- a cap-exceeded record
+whose score otherwise clears `keep_min` will still reach KEEP (previously, hitting a
+review_reason always blocked KEEP regardless of score). Project configs that want capping
+to be a hard, enforced limit should use `cap_action: "reject"` instead, which is
+unaffected by this change.
+
+**`rescue_sole_representatives()` retargeted, not removed**: in the old REVIEW-based
+world, a species with zero KEEP records could have its best REVIEW candidate promoted.
+With REVIEW gone by default, this function now promotes the best REJECT candidate that
+was NOT hard-rejected (i.e. rejected purely on score, not for a structural reason like
+contamination/chimera/duplicate/adapter-vector hit) -- preserving the same "don't lose
+the only reference for a rare species" protection this function has always existed for.
+`three_state_mode: true` restores the exact old REVIEW-based rescue candidate pool.
+
+182 passed (was 174), ruff clean (4 pre-existing findings, unchanged). Still to come in
+this same round: `reporting.py`/`pipeline.py`'s console/file output still reference
+REVIEW literally (harmless in the new default -- just always empty/zero -- but not yet
+cleaned up for clarity); the planned NR-protein escalation extension and Fillet-backed
+reject-audit are separately scoped, not yet built.
+
 ## 2026-08-29 (complete organelle genomes were permanently blocked from auto-KEEP)
 
 Found via forensic analysis of a real complete-mitogenome cluster centroid (accession
