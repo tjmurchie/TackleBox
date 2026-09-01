@@ -1,5 +1,63 @@
 # Changelog
 
+## FlyForge v1.3.0 / FlyForgeAudit v1.3.0 - 2026-09-01 (real default change: --skip-self-mask now defaults to True)
+
+**Real finding, from a live ~18,500-reference multi-species PalaeoSCOPE Phase B panel**:
+`self_repeat_softmask()` counts k-mers ACROSS THE ENTIRE input FASTA (every reference
+from every sequence combined), not per-reference. This is exactly right for the
+small/few-reference case this was originally built for (detecting genuine within-genome
+structural repeats -- tandem repeats, transposons, low-complexity runs, before tiling
+across them). But at real multi-species panel scale it stops detecting genuine repeats
+and instead flags ordinary, biologically CONSERVED single-copy coding sequence -- shared
+across species precisely because it's a good marker, not because it's repetitive -- as
+"repetitive". Confirmed on a real 18,541-reference panel: 93.7% of all bases masked
+overall, and a real 651bp COI barcode gene (the single most standard animal
+DNA-barcoding marker in existence) masked at 100%. Hybridization capture actively WANTS
+conserved loci -- that's what lets one bait cross-capture DNA from related species --
+so masking them out works directly against the goal of a small panel with broad
+cross-capture reach.
+
+**`--skip-self-mask` now defaults to `True`** (masking skipped) instead of `False`.
+`--no-skip-self-mask` restores the exact original masked-by-default behavior for anyone
+who still wants it -- a genuinely small/few-genome reference set is exactly where
+within-genome repeat detection remains the right call. Implemented via
+`argparse.BooleanOptionalAction`, so `--skip-self-mask` passed explicitly (as existing
+callers/scripts already do) behaves identically to before -- only the *bare* invocation
+(neither flag given) changes.
+
+**Real before/after comparison** on a genuine 200-record subset of a real curated
+multi-species ANIMAL reference panel (32 of which are real COI barcode genes): masked
+(old default) produced 1,844 final baits, 73.5% of references got zero final baits, and
+29 of 32 COI records got zero baits (20 total COI-derived baits). Skipped (new default)
+produced 11,491 final baits (6.2x more), 24.5% zero-bait references, and only 8 of 32
+COI records got zero baits (584 total COI-derived baits, ~29x more). Full real ANIMAL
+panel numbers and reasoning: see PalaeoSCOPE's own CHANGELOG.md, 2026-09-01 entries.
+
+**FlyForgeAudit got the identical fix**, since it reuses FlyForge's own
+`self_repeat_softmask()` but had its own independent `--skip-self-mask` flag/default (in
+`add_shared_filtering_args()`, shared by its `audit` and `augment` subcommands) -- fixed
+for consistency, same `BooleanOptionalAction` approach, same new default.
+
+`FlyForge.py`'s `main()` argument-parser construction extracted into a new
+`build_arg_parser()` function so real CLI defaults/combinations are directly testable,
+not just reachable through a full pipeline run (`add_shared_filtering_args()` in
+FlyForgeAudit.py was already separately testable, no refactor needed there). New
+`tests/test_self_repeat_mask.py` (13 tests total, both tools' first-ever test coverage
+of this function/flag): the new CLI default for both FlyForge and FlyForgeAudit,
+backward-compat of the explicit `--skip-self-mask` flag, `--no-skip-self-mask` opt-out,
+and `self_repeat_softmask()`'s own pure-function correctness (threshold behavior,
+N-handling, case-insensitivity, and a direct demonstration of the real
+cross-species-conservation finding this change is about).
+
+Also fixed in this release: `pyproject.toml` said `1.2.1` but FlyForge.py's in-file
+`__version__` constant was still `1.2.0`, and FlyForgeAudit.py's own `__version__` was
+still `1.2.0` too (both drifted during/since the prior release) -- all three now read
+`1.3.0`.
+
+46 passed (was 33), 9 deselected (slow, unaffected -- also re-run directly and confirmed
+green: `tests/test_design_opool.py`, real BLAST+/primer3, 9 passed in ~5 min). Ruff:
+same 2 pre-existing findings, unchanged.
+
 ## v1.2.1 - 2026-08-31 (fix: --circular-ids crash when --remove-complements fragments a target)
 
 Real bug, found via a live ~10,000-species PalaeoSCOPE Phase B run: `--remove-complements`

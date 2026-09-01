@@ -203,8 +203,13 @@ This process repeats for up to `--max-augment-iterations` rounds.
 ### Reference preparation
 
 - `--remove-complements` — run FlyForge/CARPDM-style complementary-target cleanup before analysis
-- `--skip-self-mask` — skip internal repeat masking
-- `--repeat-k`, `--repeat-threshold` — repeat masker settings
+- `--skip-self-mask` / `--no-skip-self-mask` — skip internal repeat masking (**default: skipped**,
+  as of v1.3.0 -- pass `--no-skip-self-mask` to restore the original masked-by-default behavior.
+  Masking counts k-mers across the *entire* input, not per-reference, so at multi-reference
+  scale it can flag ordinary cross-reference-conserved coding sequence as "repetitive"; see
+  `CHANGELOG.md`'s 2026-09-01 entry for the real finding that prompted this)
+- `--repeat-k`, `--repeat-threshold` — repeat masker settings (only relevant when masking is
+  actually enabled via `--no-skip-self-mask`)
 
 ### Off-target review
 

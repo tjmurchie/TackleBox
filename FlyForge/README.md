@@ -83,8 +83,10 @@ pytest -m slow       # also runs the real oligo-pool assembly test (requires bla
 ```
 
 The fast suite covers the tiling window/step arithmetic (including circular-genome
-wraparound) and `compute_tm()`'s behavior on both normal and pathological input. The
-`slow` suite runs `design_opool()` end to end against real BLAST+/primer3 and verifies
+wraparound), `compute_tm()`'s behavior on both normal and pathological input,
+`--circular-ids` resolution, and self-repeat masking (both its own pure-function
+correctness and the `--skip-self-mask`/`--no-skip-self-mask` CLI default). The `slow`
+suite runs `design_opool()` end to end against real BLAST+/primer3 and verifies
 the literal oligo sequence structure that gets sent for synthesis
 (`5'-[T7 promoter][probe][primer reverse-complement]-3'`), including that the probe
 sequence itself survives unmodified in the final assembled oligo.
@@ -157,9 +159,25 @@ FlyForge validates the final bare probes against the input references with BLAST
 
 FlyForge now **fails loudly** if it cannot identify a valid second amplification primer or if primer-selection BLAST output cannot be parsed. That is deliberate: a failed o-pool design should not silently produce something that could be mistaken for an order-ready synthesis file.
 
+### Self-repeat masking default (v1.3.0+)
+
+`--skip-self-mask` now defaults to **skipped** (previously masking was on by default).
+Self-repeat masking counts k-mers across the *entire* input FASTA, not per-reference --
+correct for a genuinely small/few-genome reference set (it finds real within-genome
+repeats: tandem repeats, transposons, low-complexity runs), but at real multi-species
+panel scale it stops detecting genuine repeats and instead flags ordinary,
+cross-species-conserved coding sequence as "repetitive" -- discarding exactly the loci
+that let one bait cross-capture DNA from related species. Pass `--no-skip-self-mask` to
+restore the original masked-by-default behavior, which is still the right call for a
+small/few-genome reference set (see the single-organism example below).
+
 ## Recommended use patterns
 
 ### Single-organism ancient DNA or degraded DNA capture
+
+A small/few-genome reference set is exactly where self-repeat masking is still the right
+call (see above) -- `--no-skip-self-mask` restores it explicitly, since the tool-wide
+default is now skipped:
 
 ```bash
 FlyForge \
@@ -169,11 +187,18 @@ FlyForge \
   --tiling-density 4 \
   --min-tm 50 \
   --remove-complements \
+  --no-skip-self-mask \
   --circular \
   --threads 8
 ```
 
 ### Multi-species or environmental panel design
+
+Self-repeat masking is skipped by default here (the right call at this scale -- see
+above), so no extra flag is needed. `--max-baits`/`--min-tiling-density` are worth
+setting explicitly for a real affordability/pool-size target -- FlyForge auto-adjusts
+tiling density to fit, rather than tiling at a fixed density and hoping the result lands
+near budget:
 
 ```bash
 FlyForge \
@@ -187,6 +212,8 @@ FlyForge \
   --blast-min-pident 80 \
   --blast-max-hits 5 \
   --cluster-identity 0.95 \
+  --max-baits 20000 \
+  --min-tiling-density 1.0 \
   --threads 16
 ```
 

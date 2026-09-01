@@ -52,7 +52,7 @@ from Bio.Seq import Seq
 
 import FlyForge as ff
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 # ============================================================================
@@ -1560,8 +1560,15 @@ def add_shared_filtering_args(parser: argparse.ArgumentParser) -> None:
                         help="k-mer size for self-repeat masking (default: 15).")
     parser.add_argument("--repeat-threshold", type=int, default=3,
                         help="Minimum repeat-kmer count to trigger masking (default: 3).")
-    parser.add_argument("--skip-self-mask", action="store_true",
-                        help="Skip internal repeat masking of the references under review.")
+    parser.add_argument("--skip-self-mask", action=argparse.BooleanOptionalAction, default=True,
+                        help="Skip internal repeat masking of the references under review "
+                             "(default: skipped). Matches FlyForge's own v1.3.0 default change: "
+                             "self_repeat_softmask() counts k-mers across the ENTIRE input, not "
+                             "per-reference, so at multi-reference scale it can flag ordinary "
+                             "cross-reference-conserved coding sequence as \"repetitive\" -- see "
+                             "FlyForge/CHANGELOG.md's 2026-09-01 entry for the real finding. Pass "
+                             "--no-skip-self-mask to restore the original masked-by-default "
+                             "behavior.")
     parser.add_argument("--remove-complements", action="store_true",
                         help="Run CARPDM/FlyForge-style complementary target cleanup before analysis.")
     parser.add_argument("--blast-db",

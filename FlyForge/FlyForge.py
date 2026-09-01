@@ -63,7 +63,7 @@ from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -2229,7 +2229,10 @@ def _update_ref_counts(ref_stats: Dict[str, RefStats], baits: List[Bait],
 # Argument parsing
 # ============================================================================
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Builds FlyForge's real CLI parser -- extracted out of `main()` so tests can
+    exercise real argument defaults/combinations directly, without needing to invoke the
+    parser only indirectly through a full `main()`/`run_pipeline()` call."""
     ap = argparse.ArgumentParser(
         description=(
             "TackleBox: FlyForge - Comprehensive bait/probe designer for "
@@ -2289,8 +2292,23 @@ Examples:
                     help="k-mer size for self-repeat masking (default: 15).")
     ap.add_argument("--repeat-threshold", type=int, default=3,
                     help="Min k-mer count to flag as repetitive (default: 3).")
-    ap.add_argument("--skip-self-mask", action="store_true",
-                    help="Skip internal self-repeat masking.")
+    ap.add_argument("--skip-self-mask", action=argparse.BooleanOptionalAction, default=True,
+                    help="Skip internal self-repeat masking (default: skipped). "
+                         "Real finding, 2026-09-01: self_repeat_softmask() counts k-mers "
+                         "ACROSS THE ENTIRE input FASTA, not per-reference -- fine for "
+                         "the small/few-reference case this was originally built for, "
+                         "but at real multi-species panel scale (tens of thousands of "
+                         "references) it stops detecting genuine structural repeats and "
+                         "instead flags ordinary, biologically CONSERVED single-copy "
+                         "coding sequence -- shared across species precisely because "
+                         "it's a good marker -- as \"repetitive\". Confirmed on a real "
+                         "18,541-reference panel: 93.7%% of all bases masked overall, "
+                         "and a real 651bp COI barcode gene masked 100%%, discarding "
+                         "the single most standard animal DNA-barcoding marker there "
+                         "is. Pass --no-skip-self-mask to restore the original "
+                         "masked-by-default behavior (still fully supported, still the "
+                         "right call for a genuinely small/few-genome reference set "
+                         "where within-genome repeat detection is the intent).")
 
     # Complementary region removal
     ap.add_argument("--remove-complements", action="store_true",
@@ -2349,6 +2367,11 @@ Examples:
     ap.add_argument("-v", "--version", action="version",
                     version=f"TackleBox: FlyForge v{__version__}")
 
+    return ap
+
+
+def main():
+    ap = build_arg_parser()
     args = ap.parse_args()
 
     # Set up progress log default
