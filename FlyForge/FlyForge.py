@@ -1226,16 +1226,46 @@ def resolve_ref_hint_to_target(ref_hint: Optional[str], target_ids: List[str]) -
     return target_ids[0] if len(target_ids) == 1 else None
 
 
-def parse_circular_id_set(circular_ids_arg: Optional[str], available_ids: List[str]) -> Set[str]:
-    """Resolve a comma-delimited set of reference IDs to treat as circular."""
+def parse_circular_id_set(
+    circular_ids_arg: Optional[str],
+    available_ids: List[str],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Set[str]:
+    """Resolve a comma-delimited set of reference IDs to treat as circular.
+
+    Real bug, found 2026-08-31 via a live ~10,000-species PalaeoSCOPE Phase B run: this
+    used to raise RuntimeError and abort the ENTIRE FlyForge run (losing every other
+    reference's already-completed tiling work along with it) whenever a requested
+    circular-reference hint couldn't resolve to EXACTLY ONE available ID -- which
+    genuinely happens whenever `--remove-complements` has chopped that same accession
+    into 2+ linear sub-fragments (e.g. an inverted-repeat region triggered a self-BLAST
+    minus-strand hit and split it), since `resolve_ref_hint_to_target`'s own "contains"
+    fuzzy match then matches multiple chopped pieces -- genuinely ambiguous, not a bug in
+    the matching logic itself. Once a circular molecule has been cut into 2+ linear
+    sub-fragments at arbitrary internal-repeat boundaries, none of the resulting pieces
+    are topologically circular anymore anyway (the original end-wraps-to-start join point
+    isn't preserved by any single fragment), so the scientifically correct outcome is to
+    drop that hint from the circular set entirely -- not guess which fragment, if any, to
+    keep treating as circular. Unresolvable/ambiguous hints are now logged as a warning
+    and skipped (that reference is simply tiled linearly instead), matching this
+    codebase's own "degrade honestly, don't crash the whole run over one recoverable
+    case" convention already used elsewhere (see `remove_complementary_targets`).
+    """
     if not circular_ids_arg:
         return set()
+    warn = log_fn if log_fn is not None else (lambda msg: None)
     requested = [tok.strip() for tok in str(circular_ids_arg).split(',') if tok.strip()]
     resolved: Set[str] = set()
     for token in requested:
         match = resolve_ref_hint_to_target(token, available_ids)
         if match is None:
-            raise RuntimeError(f"Could not resolve circular reference identifier: {token}")
+            warn(
+                f"WARNING: could not resolve circular reference identifier {token!r} to "
+                "exactly one target (ambiguous or not found -- often caused by "
+                "--remove-complements splitting it into multiple fragments). Skipped: "
+                "this reference will be tiled linearly instead."
+            )
+            continue
         resolved.add(match)
     return resolved
 
@@ -1740,7 +1770,7 @@ def run_pipeline(args):
     else:
         log(f"Using tiling density {used_tiling_density}.")
 
-    circular_ids = set(lengths_dict.keys()) if args.circular else parse_circular_id_set(args.circular_ids, list(lengths_dict.keys()))
+    circular_ids = set(lengths_dict.keys()) if args.circular else parse_circular_id_set(args.circular_ids, list(lengths_dict.keys()), log_fn=log)
     if circular_ids:
         log("Circular tiling enabled for: " + ", ".join(sorted(circular_ids)))
 

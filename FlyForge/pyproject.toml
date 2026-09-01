@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flyforge"
-version = "1.2.0"
+version = "1.2.1"
 description = "Bait/probe designer for hybridization capture enrichment, with integrated support for in-house RNA bait synthesis from DNA oligo pools (CARPDM oligo-pool strategy)."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.2.1 - 2026-08-31 (fix: --circular-ids crash when --remove-complements fragments a target)
+
+Real bug, found via a live ~10,000-species PalaeoSCOPE Phase B run: `--remove-complements`
+can chop a single input record into 2+ linear sub-fragments (each renamed with a
+`_[start:end]` suffix) when it hits its own self-BLAST minus-strand region. If that same
+accession was also requested via `--circular-ids`, `parse_circular_id_set()` resolving the
+bare accession against the now-fragmented ID set became genuinely ambiguous (it matches
+multiple fragments) and this used to raise `RuntimeError`, aborting the ENTIRE FlyForge
+run and losing every other reference's already-completed tiling work along with it (real
+proof case: `NC_011818.1`, an Accipiter gentilis mitochondrion).
+
+Once a circular molecule has been cut into 2+ linear sub-fragments at arbitrary
+internal-repeat boundaries, none of the resulting pieces are topologically circular
+anymore anyway (the original end-wraps-to-start join point isn't preserved by any single
+fragment) -- so the scientifically correct outcome is to drop that hint from the circular
+set entirely, not guess which fragment to keep treating as circular. `parse_circular_id_set()`
+now logs a warning and skips an unresolvable/ambiguous hint (that reference is simply
+tiled linearly instead) rather than raising; gained an optional `log_fn` parameter (the
+main pipeline now passes its own `log`).
+
+New test suite: `tests/test_circular_ids.py`. 33 passed (was 25), 9 deselected (slow).
+
 ## Unreleased
 - `compute_tm()` Tm-calculation failures (empty, all-ambiguous, or invalid-
   IUPAC-code sequence, e.g. a window that's entirely `R`/`Y`/`W`/etc. -- `N`
