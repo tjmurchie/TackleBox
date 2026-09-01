@@ -82,6 +82,21 @@ print(urllib.parse.quote(sys.argv[1]))
 PY
 }
 
+#: NCBI EUtils occasionally returns a non-JSON body under sustained load (a transient
+#: rate-limit/error page rather than the documented JSON response) -- previously this
+#: crashed the ENTIRE script hard via `jq`'s own parse error ("Invalid numeric literal at
+#: line 1, column 10"), losing every already-processed row along with it, since there was
+#: no retry/validation of any kind. Real failure, hit twice in a row on a live ~10,000-
+#: species run (species #3, then again at #37 on retry), 2026-08-31. `eutils()` now
+#: validates the response is real JSON (`jq empty`) before returning it, retrying a few
+#: times on failure, and degrading to a safe empty JSON object (`{}`) after exhausting
+#: retries rather than ever propagating bad data downstream -- every caller's own `jq`
+#: filter already treats a missing/null field as "no data" (NO_TAXID / NA / a zero count),
+#: so `{}` degrades that one query to "nothing found" instead of crashing the whole run.
+#: Both knobs are overridable (used by this script's own test suite to avoid real sleeps).
+EUTILS_MAX_ATTEMPTS="${GUIDECHECK_EUTILS_MAX_ATTEMPTS:-3}"
+EUTILS_RETRY_DELAY="${GUIDECHECK_EUTILS_RETRY_DELAY:-1}"
+
 eutils() {
   local url="$1"
   if [[ -n "$API_KEY" ]]; then
@@ -91,7 +106,20 @@ eutils() {
       url="${url}?api_key=$(urlenc "$API_KEY")"
     fi
   fi
-  curl -s "$url"
+  local attempt body
+  for (( attempt=1; attempt<=EUTILS_MAX_ATTEMPTS; attempt++ )); do
+    body="$(curl -s "$url" || true)"
+    if [[ -n "$body" ]] && jq empty <<<"$body" >/dev/null 2>&1; then
+      printf '%s' "$body"
+      return 0
+    fi
+    echo "WARNING: guidecheck.sh: non-JSON/empty NCBI response (attempt ${attempt}/${EUTILS_MAX_ATTEMPTS}): ${url}" >&2
+    if (( attempt < EUTILS_MAX_ATTEMPTS )); then
+      sleep "$EUTILS_RETRY_DELAY"
+    fi
+  done
+  echo "WARNING: guidecheck.sh: giving up after ${EUTILS_MAX_ATTEMPTS} attempts, treating as empty result: ${url}" >&2
+  printf '{}'
 }
 
 tax_term() {
@@ -177,7 +205,16 @@ progress_done() {
       continue
     fi
 
-    read -r matched_name rank < <(get_tax_summary "$taxid" | awk -F'\t' '{print $1, $2}')
+    # Second real bug, found 2026-08-31 while writing a regression test for the retry fix
+    # above: piping the TSV line through `awk '{print $1, $2}'` re-joins its two fields
+    # with awk's own OFS (a single space) BEFORE `read` ever sees them -- destroying the
+    # original tab boundary. Any real binomial `matched_name` (e.g. "Mammuthus
+    # primigenius" -- the overwhelming majority of real successful matches, not an edge
+    # case) then has its own internal space misread as the matched_name/rank boundary:
+    # `read -r matched_name rank` silently produced `matched_name="Mammuthus"`,
+    # `rank="primigenius species"`. Reading the TSV line directly with `IFS=$'\t'`
+    # preserves the real tab-delimited field boundary regardless of internal spaces.
+    IFS=$'\t' read -r matched_name rank < <(get_tax_summary "$taxid")
     nuccore="$(count_db nuccore "$taxid")"
     sra="$(count_db sra "$taxid")"
     assembly="$(count_db assembly "$taxid")"
