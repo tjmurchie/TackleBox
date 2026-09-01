@@ -1,5 +1,45 @@
 # Spinner Changelog
 
+## 1.3.1 — 2026-09-01 (fix: clustering ignored `cluster.by`, causing a ~100 HOUR ETA at real scale)
+
+Real, severe bug found live via a ~10,000-species PalaeoSCOPE Phase B run:
+`cluster.by` (default `["species_guess", "marker_class"]` in `config.py` -- every real
+project inherits this, not something anyone opted into) was declared in the config
+schema but never actually read by `clustering.py::run_vsearch()` -- every run clustered
+the ENTIRE input FASTA in ONE global `vsearch --cluster_fast` call regardless of this
+setting. Invisible at smoke-test scale (a few hundred candidate records); catastrophic
+at real production scale (367,014 candidate records for one panel): confirmed live, 26+
+CPU-hours and still zero bytes of output after 3.5+ wall-clock hours, with Spinner's own
+progress estimator projecting a **~100 HOUR ETA**. Root cause: vsearch's greedy
+`--cluster_fast` algorithm had to compare every record against an ever-growing pool of
+centroids accumulated across ALL ~10,000 unrelated species combined, instead of the many
+small, independent per-(species, marker_class) pools the config's own `by` setting was
+always meant to scope it to -- cross-species comparison at 98%+ identity was never going
+to produce a real match anyway (genuine inter-species divergence at these markers
+essentially always exceeds a 2% threshold), so the global scope bought nothing
+semantically, only an unbounded combinatorial blowup.
+
+Fixed: `run_vsearch()` now honors `cluster.by`, grouping records by the named
+`Annotation` attributes and giving each group (typically tens of records, not hundreds
+of thousands) its own independent `vsearch --cluster_fast` call. A singleton group
+(exactly one record for that species/marker-class combination -- common at real scale)
+skips invoking vsearch entirely and is trivially its own centroid. Per-group UC/centroid
+output is merged into the same `<outprefix>.clusters.uc`/`.cluster_centroids.fasta`
+paths this function has always written (with each group's own independently-numbered
+clusters remapped to a globally-unique ID so merging never collides two different
+groups' "cluster 0"), written incrementally rather than buffered in memory (real
+progress visibility + bounded memory for hundreds of thousands of full-length
+sequences), and resumable (a group whose own UC file already exists on disk from a
+prior partial run is not re-clustered). `cluster.by: []`/unset falls back to the exact
+previous single-global-call behavior, unchanged.
+
+Validated three ways before commit: a real vsearch (not mocked) smoke test with
+synthetic near-duplicate sequences across 3 species/marker-class groups plus a
+singleton, confirming correct independent clustering and zero cross-group ID collisions;
+a new `tests/test_clustering.py` (this module's first-ever test coverage, 8 tests,
+vsearch mocked deterministically); and the full existing suite. 199 passed (was 191),
+ruff clean.
+
 ## 1.3.0 — 2026-08-31 (version bump for the accept/reject-only default + NR escalation)
 
 Bumps `VERSION`/`pyproject.toml` from 1.2.0 to 1.3.0 to reflect the three real,
