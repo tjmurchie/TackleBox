@@ -1,5 +1,13 @@
 # Spinner Changelog
 
+## 1.3.0 — 2026-08-31 (version bump for the accept/reject-only default + NR escalation)
+
+Bumps `VERSION`/`pyproject.toml` from 1.2.0 to 1.3.0 to reflect the three real,
+user-facing changes released together below: the accept/reject-only default decision
+model (a real default-behavior change, `three_state_mode: true` opts back into the old
+KEEP/REVIEW/REJECT behavior), the matching report/console output changes, and the new
+opt-in NR-protein escalation. No further code change in this entry.
+
 ## 2026-08-31 (new opt-in NR-protein escalation for `taxonomy_no_expected_match`)
 
 Extends the existing cross-kingdom escalation machinery (`escalate_cross_kingdom`) with
