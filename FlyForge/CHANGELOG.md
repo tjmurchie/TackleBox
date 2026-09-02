@@ -1,5 +1,61 @@
 # Changelog
 
+## FlyForge v1.4.0 - 2026-09-02 (new, opt-in: `--redundancy-prereduce-identity` -- a ~108x faster redundancy-removal path at real multi-species scale)
+
+**FlyForgeAudit stays at v1.3.0 this release** -- this change is entirely within
+`FlyForge.py`'s own pipeline; `FlyForgeAudit.py`'s `augment` mode also calls
+`self_blast_filter()`/`cluster_baits_cd_hit()` but was not touched here (its own typical
+input scale -- incremental new-target spike-ins -- didn't motivate this yet; a future
+release may extend the same option there once/if a real need shows up).
+
+**Real finding that motivated this**: the v1.3.0 `--skip-self-mask` default fix (above)
+is a real, large improvement, but it removes an accidental side effect masking used to
+have: keeping `self_blast_filter()`'s candidate volume small. At real multi-species
+panel scale with masking off, that function's all-vs-all `blastn` self-comparison plus
+its Python post-processing loop can take HOURS -- confirmed live on a real 726,110-
+candidate panel (18,541 references, one real PalaeoSCOPE Phase B project): 2h39m1s for
+that one step alone, landing at 144,311 final baits, well over even a modest declared
+`--max-baits`/`--probe-num-cutoff` budget.
+
+**Real, measured, independently-verified fix**: a new, entirely optional
+`--redundancy-prereduce-identity` flag (default: unset/disabled -- zero behavior change
+for any existing invocation) runs `cluster_baits_cd_hit()` (the SAME function the
+existing, separate post-redundancy clustering step already calls, just reused earlier)
+ONCE at the given identity threshold as a cheap pre-pass, immediately before
+`self_blast_filter()` -- which then runs completely UNCHANGED on the smaller,
+pre-deduplicated remainder. Must be `>=0.80`: cd-hit-est has a hard-coded identity floor
+in nucleotide mode (confirmed independently: fails with "invalid clstr threshold, should
+>=0.8" even with word length explicitly lowered) -- FlyForge now validates this itself
+with a clear error before ever invoking the subprocess, rather than surfacing
+cd-hit-est's own cryptic failure.
+
+Real, measured result on the SAME 726,110-candidate panel above, reproduced twice
+(once during initial prototyping, once by an independent fresh reviewer re-running
+everything from scratch in a clean directory): cd-hit-est pre-pass at 0.80 identity, 68s
+(726,110 -> 118,461), then the unchanged `self_blast_filter()` on the remainder, ~20s
+(-> 95,015 final) -- **roughly 88 seconds total, versus 2h39m+ for the unmodified
+pipeline** (~108x faster), and landing CLOSER to a real target budget besides, since a
+smaller starting pool naturally yields a tighter final count. The independent reviewer
+also read `self_blast_filter()` line-by-line against a standalone prototype of this same
+logic and found it behaviorally faithful, with no bugs that would change the result.
+
+New `--redundancy-prereduce-identity` (float, default `None`), new `n_baits_after_prereduce`
+column in `PREFIX_per_ref_stats.tsv` (only populated when the flag is used), new
+`redundancy_prereduce_identity` line in `PREFIX_summary.tsv`'s parameters section, new
+`"redundancy_prereduce"` pipeline step (only appears in the progress display/step count
+when enabled). New `tests/test_redundancy_prereduce.py` (9 tests: 7 fast covering the
+CLI default and the `>=0.80` validation boundary via direct `run_pipeline()` calls that
+exit before touching any file/external tool, 2 marked `slow` running a real end-to-end
+pipeline with actual `cd-hit-est`/`blastn` invocations on a small synthetic dataset with
+a guaranteed exact-duplicate pair). Full suite: 64 passed (was 55), ruff clean (2
+pre-existing unrelated violations elsewhere in the file confirmed untouched by this
+change).
+
+**Not yet the default** -- this is deliberately opt-in for now. Making it the default
+(or exposing it through PalaeoSCOPE's own `plan_flyforge()`) is a real product decision
+about changing final bait-panel composition for every user, flagged separately rather
+than decided here.
+
 ## FlyForge v1.3.0 / FlyForgeAudit v1.3.0 - 2026-09-01 (real default change: --skip-self-mask now defaults to True)
 
 **Real finding, from a live ~18,500-reference multi-species PalaeoSCOPE Phase B panel**:

@@ -84,12 +84,14 @@ pytest -m slow       # also runs the real oligo-pool assembly test (requires bla
 
 The fast suite covers the tiling window/step arithmetic (including circular-genome
 wraparound), `compute_tm()`'s behavior on both normal and pathological input,
-`--circular-ids` resolution, and self-repeat masking (both its own pure-function
-correctness and the `--skip-self-mask`/`--no-skip-self-mask` CLI default). The `slow`
-suite runs `design_opool()` end to end against real BLAST+/primer3 and verifies
-the literal oligo sequence structure that gets sent for synthesis
+`--circular-ids` resolution, self-repeat masking (both its own pure-function
+correctness and the `--skip-self-mask`/`--no-skip-self-mask` CLI default), and
+`--redundancy-prereduce-identity`'s `>=0.80` validation boundary. The `slow` suite runs
+`design_opool()` end to end against real BLAST+/primer3 and verifies the literal oligo
+sequence structure that gets sent for synthesis
 (`5'-[T7 promoter][probe][primer reverse-complement]-3'`), including that the probe
-sequence itself survives unmodified in the final assembled oligo.
+sequence itself survives unmodified in the final assembled oligo, plus a real end-to-end
+`--redundancy-prereduce-identity` run against actual `cd-hit-est`/`blastn`.
 
 ## Quick start
 
@@ -214,6 +216,29 @@ FlyForge \
   --cluster-identity 0.95 \
   --max-baits 20000 \
   --min-tiling-density 1.0 \
+  --threads 16
+```
+
+### Very large multi-species panels (tens of thousands of references)
+
+At real large-scale, masking off (the new default above) can leave `self_blast_filter()`
+facing a candidate pool so large its own redundancy-removal step takes hours (confirmed:
+2h39m on a real 726,110-candidate panel). `--redundancy-prereduce-identity` (v1.4.0+,
+default disabled) adds a cheap `cd-hit-est` pre-pass immediately before that step,
+cutting the same real case to under 90 seconds while landing closer to budget besides.
+Must be `>=0.80` (cd-hit-est's own hard floor in nucleotide mode):
+
+```bash
+FlyForge \
+  -i targets/*.fasta \
+  --prefix multi_taxon_panel \
+  --bait-length 80 \
+  --tiling-density 3 \
+  --min-tm 50 \
+  --remove-complements \
+  --max-baits 20000 \
+  --min-tiling-density 1.0 \
+  --redundancy-prereduce-identity 0.80 \
   --threads 16
 ```
 

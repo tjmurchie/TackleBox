@@ -63,7 +63,7 @@ from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -104,6 +104,7 @@ class RefStats:
     n_baits_after_mask: int = 0
     n_baits_after_tm: int = 0
     n_baits_after_blast: int = 0
+    n_baits_after_prereduce: int = 0
     n_baits_after_cluster: int = 0
     n_baits_after_redundancy: int = 0
     n_baits_final: int = 0
@@ -170,6 +171,7 @@ class ProgressTracker:
         "complement_bait_filter":"Removing complement bait pairs",
         "blast_filter":          "BLAST percent-identity filter",
         "specificity_filter":    "BLAST specificity filter (nt)",
+        "redundancy_prereduce":  "cd-hit-est redundancy pre-reduction",
         "self_blast_redundancy": "Self-BLAST redundancy filter",
         "clustering":            "cd-hit-est clustering",
         "opool_design":          "Designing oligo pool (T7 + primer)",
@@ -1668,6 +1670,17 @@ def run_pipeline(args):
     log, log_handle = make_logger(args.progress_log)
     t_start = time.time()
 
+    if args.redundancy_prereduce_identity is not None and not (
+        0.80 <= args.redundancy_prereduce_identity < 1.0
+    ):
+        log(f"ERROR: --redundancy-prereduce-identity must be >=0.80 and <1.0 "
+            f"(cd-hit-est's own nucleotide-mode identity threshold has a hard floor "
+            f"of 0.80 regardless of word length); got "
+            f"{args.redundancy_prereduce_identity}. Aborting.")
+        if log_handle is not None:
+            log_handle.close()
+        sys.exit(1)
+
     # Track steps for progress
     steps_planned = ["preprocessing"]
     if args.remove_complements:
@@ -1686,6 +1699,8 @@ def run_pipeline(args):
         steps_planned.append("blast_filter")
     if args.specificity_db:
         steps_planned.append("specificity_filter")
+    if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
+        steps_planned.append("redundancy_prereduce")
     if not args.no_redundancy:
         steps_planned.append("self_blast_redundancy")
     if not args.no_cluster:
@@ -1922,6 +1937,26 @@ def run_pipeline(args):
         progress.finish_step("specificity_filter",
                              details=f"{removed_spec} removed; {len(all_baits)} remain")
 
+    # ===== 12b. Optional cd-hit-est pre-reduction before self-BLAST redundancy filter =====
+    # See --redundancy-prereduce-identity's own help text for the real finding motivating
+    # this: at real multi-species scale with masking disabled, self_blast_filter()'s
+    # all-vs-all blastn + post-processing loop can take hours. Reuses cluster_baits_cd_hit()
+    # unchanged (the same function the later, separate clustering step already calls) --
+    # this is deliberately just a cheap pre-pass ahead of self_blast_filter(), not a
+    # replacement for it: self_blast_filter()'s own redundancy logic still runs afterward,
+    # completely unmodified, just against a smaller, pre-deduplicated candidate pool.
+    if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
+        progress.start_step("redundancy_prereduce")
+        all_baits, removed_prereduce = cluster_baits_cd_hit(
+            all_baits, identity=args.redundancy_prereduce_identity,
+            overlap=args.cluster_overlap, threads=args.threads)
+        s = summarize_baits("after_prereduce", all_baits)
+        s["removed"] = removed_prereduce
+        stats.append(s)
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
+        progress.finish_step("redundancy_prereduce",
+                             details=f"{removed_prereduce} removed; {len(all_baits)} remain")
+
     # ===== 13. Self-BLAST redundancy filter =====
     if not args.no_redundancy:
         progress.start_step("self_blast_redundancy")
@@ -2017,7 +2052,7 @@ def run_pipeline(args):
             "ref_id", "length_original", "length_preprocessed",
             "modified_bases", "frac_modified", "dropped_for_length",
             "n_baits_tiled", "n_baits_after_amb", "n_baits_after_mask",
-            "n_baits_after_tm", "n_baits_after_blast",
+            "n_baits_after_tm", "n_baits_after_blast", "n_baits_after_prereduce",
             "n_baits_after_cluster", "n_baits_after_redundancy",
             "n_baits_final",
             "coverage_mean", "coverage_min", "coverage_max",
@@ -2031,7 +2066,8 @@ def run_pipeline(args):
                 str(int(rs.dropped_for_length)),
                 str(rs.n_baits_tiled), str(rs.n_baits_after_amb),
                 str(rs.n_baits_after_mask), str(rs.n_baits_after_tm),
-                str(rs.n_baits_after_blast), str(rs.n_baits_after_cluster),
+                str(rs.n_baits_after_blast), str(rs.n_baits_after_prereduce),
+                str(rs.n_baits_after_cluster),
                 str(rs.n_baits_after_redundancy), str(rs.n_baits_final),
                 f"{rs.coverage_mean:.6f}", str(rs.coverage_min),
                 str(rs.coverage_max), f"{rs.coverage_fraction_covered:.6f}",
@@ -2076,6 +2112,10 @@ def run_pipeline(args):
             "no_cluster": args.no_cluster,
             "no_redundancy": args.no_redundancy,
             "probe_num_cutoff": args.probe_num_cutoff,
+            "redundancy_prereduce_identity": (
+                args.redundancy_prereduce_identity
+                if args.redundancy_prereduce_identity is not None else "N/A"
+            ),
             "no_opool": args.no_opool,
             "threads": args.threads,
             "n_input_sequences": len(ref_stats),
@@ -2343,6 +2383,25 @@ Examples:
                     help="Skip self-BLAST redundancy/complementarity filter.")
     ap.add_argument("--probe-num-cutoff", type=int, default=100000,
                     help="Max probe count target for redundancy filter (default: 100000).")
+    ap.add_argument("--redundancy-prereduce-identity", type=float, default=None,
+                    help="Optional (default: disabled, no change to existing behavior). "
+                         "Runs a cd-hit-est pass at this identity threshold BEFORE the "
+                         "self-BLAST redundancy filter, to cheaply collapse near-identical "
+                         "candidates first. Real finding, 2026-09-02: at real multi-species "
+                         "panel scale with masking disabled (see --skip-self-mask), the "
+                         "self-BLAST step's candidate volume can be so large that its "
+                         "all-vs-all blastn plus post-processing loop takes HOURS (confirmed: "
+                         "2h39m on a real 726,110-candidate panel) -- a cheap cd-hit-est "
+                         "pre-pass collapsing the SAME real candidate pool to ~118K first cut "
+                         "this to under 90 SECONDS total (~108x faster) while landing CLOSER "
+                         "to the requested --probe-num-cutoff target, since self-BLAST's own "
+                         "redundancy logic runs unchanged, just on a smaller, pre-deduplicated "
+                         "input. Must be >=0.80 -- cd-hit-est's own nucleotide-mode identity "
+                         "threshold has a hard floor there regardless of word length; FlyForge "
+                         "validates this itself with a clear error rather than letting "
+                         "cd-hit-est fail with a cryptic subprocess error. Has no effect if "
+                         "--no-redundancy is also set (there is no self-BLAST step left to "
+                         "precede).")
 
     # O-pool synthesis
     ap.add_argument("--no-opool", action="store_true",
