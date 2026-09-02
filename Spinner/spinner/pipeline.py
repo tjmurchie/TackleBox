@@ -36,6 +36,7 @@ from .external import parse_generic_hook_table, run_blast, run_mmseqs, run_templ
 from .fasta import parse_fasta, write_keyed_fasta
 from .reporting import write_split_fastas, write_summary_html, write_summary_tsv
 from .taxonomy_blast import (
+    canonicalize_species_guesses,
     load_taxdb,
     make_windowed_fasta,
     mark_length_exempt_records,
@@ -334,6 +335,18 @@ def run_pipeline(args, filter_mode: bool) -> None:
 
     steps = cfg.get("steps", {})
 
+    # Load the NCBI taxdump up front, ONLY if species_guess canonicalization needs it
+    # before annotation-adjacent grouping happens (rescue_cross_species_duplicates runs
+    # right after annotate(), well before the taxonomy_blast stage below would
+    # otherwise load one). The taxonomy_blast stage reuses this same instance instead
+    # of loading a second one when both are configured -- see that block below.
+    taxdb = None
+    if cfg.get("cluster", {}).get("canonicalize_species_guess", False):
+        taxdb = load_taxdb(cfg)
+        if taxdb:
+            info(f"  Taxdump loaded for species_guess canonicalization "
+                 f"({len(taxdb.name_to_taxid):,} names indexed)")
+
     # --- Build ordered step plan for "Step X/N" display ---
     _step_plan = ["Load FASTA", "Annotate and QC screen"]
     if steps.get("vector_screen", False):  _step_plan.append("Vector screen")
@@ -428,6 +441,17 @@ def run_pipeline(args, filter_mode: bool) -> None:
 
         _save_checkpoint(ann, len(records), checkpoint_file)
 
+    # species_guess canonicalization (opt-in, see cluster.canonicalize_species_guess):
+    # must run before EVERY consumer that groups by raw species_guess text --
+    # rescue_cross_species_duplicates immediately below, plus clustering/capping/
+    # rescue_sole_representatives later -- so it's a single upstream fix point rather
+    # than four separate ones. Idempotent, so re-running it on a checkpoint-resumed
+    # ann (already canonicalized in a prior run) is safe and cheap.
+    if taxdb is not None:
+        canon_n = canonicalize_species_guesses(ann, taxdb)
+        if canon_n:
+            info(f"  species_guess canonicalized via taxdump: {canon_n:,} records")
+
     # Cross-species duplicate rescue: species whose sequences are all exact copies
     # of another species' sequences get one representative un-flagged so that the
     # species is not left with zero KEEP candidates.  Runs on both fresh and resumed
@@ -484,7 +508,8 @@ def run_pipeline(args, filter_mode: bool) -> None:
             warn("vector_screen enabled but vector_screen.blast_db not set — skipping")
 
     # -----------------------------------------------------------------------
-    taxdb = None
+    # NOTE: `taxdb` may already be loaded above (cluster.canonicalize_species_guess) --
+    # reused here rather than reloaded, since loading is a real ~30s/~2GB cost.
     if steps.get("taxonomy_blast", False):
         tax_method = cfg["taxonomy_blast"].get("method", "blastn").lower()
         _stage(f"Taxonomy BLAST  [{tax_method}]")
@@ -494,13 +519,15 @@ def run_pipeline(args, filter_mode: bool) -> None:
             info(f"  Database: {db}")
             if taxdump_dir:
                 info(f"  Taxdump dir:    {taxdump_dir}")
-                info("  Loading NCBI taxdump (~30 s, ~2 GB RAM) ...")
+                if taxdb is None:
+                    info("  Loading NCBI taxdump (~30 s, ~2 GB RAM) ...")
             else:
                 info("  Taxdump not configured — using string-matching mode only")
             t0 = time.time()
-            taxdb = load_taxdb(cfg)
-            if taxdump_dir and taxdb:
-                info(f"  Taxdump loaded  [{fmt_seconds(time.time() - t0)}]")
+            if taxdb is None:
+                taxdb = load_taxdb(cfg)
+                if taxdump_dir and taxdb:
+                    info(f"  Taxdump loaded  [{fmt_seconds(time.time() - t0)}]")
 
             n_threads = cfg["taxonomy_blast"].get("num_threads", 1)
             max_qlen = int(cfg["taxonomy_blast"].get("max_query_length", 0))

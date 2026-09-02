@@ -1,5 +1,51 @@
 # Spinner Changelog
 
+## 1.4.0 — 2026-09-01 (new, opt-in: species_guess canonicalization via NCBI taxdump synonyms)
+
+Real bug found via forensic analysis of a real ~10,000-species PalaeoSCOPE Phase B
+candidate list: real taxonomic synonym pairs (e.g. `Antigone canadensis` / `Grus
+canadensis`, a genus reassignment; `Bison bison` / `Bos bison`) parse to two DIFFERENT
+`species_guess` strings from real GenBank headers, purely because `regions.py`'s
+`guess_species()` is a pure text/regex function with zero taxonomy awareness -- it
+cannot know two different real species names refer to the same taxon, no matter how
+good the underlying taxonomic data is. Confirmed live against the real NCBI taxdump
+that both names already resolve to the same taxid (1977160 / 9901 respectively) via
+its `synonym` name class -- data that already exists in any taxdump PalaeoSCOPE (or any
+other caller) builds, just never previously indexed by `TaxdumpDB` (which only kept
+`scientific name` entries). Every consumer that groups records by raw `species_guess`
+text -- `rescue_cross_species_duplicates()`, `clustering.run_vsearch()`'s `cluster.by`
+grouping (see 1.3.1 above), `capping.cap_refs()`, `capping.rescue_sole_representatives()`
+-- would treat what should be one species' pooled candidate set as two smaller,
+independently-clustered/independently-capped groups whenever GenBank submitters used
+different names for different records of the same real species.
+
+Fixed with a single upstream fix point rather than four separate ones:
+- `TaxdumpDB` now also builds a `name_to_taxid` reverse index (lower-cased) covering
+  both `scientific name` and `synonym` name classes from `names.dmp` (a single extra
+  branch in the file read it already does -- no added I/O), plus a new
+  `canonical_species_name(name)` method resolving either a scientific name or a known
+  synonym to the taxon's one canonical scientific name (unresolvable/empty names are
+  returned unchanged -- always degrades gracefully).
+- New `taxonomy_blast.canonicalize_species_guesses(ann, taxdb)` rewrites every
+  `Annotation.species_guess` to its canonical form, in place, once, right after
+  annotation (and before `rescue_cross_species_duplicates` or any later
+  clustering/capping stage runs) -- so none of those four consumers need their own
+  separate synonym-awareness or any code changes at all.
+- New opt-in config key `cluster.canonicalize_species_guess` (default `False` --
+  existing projects/configs are completely unaffected). When enabled AND
+  `taxonomy_blast.taxdump_dir` is set, `pipeline.py` now loads the taxdump up front
+  (previously only loaded, much later, inside the `taxonomy_blast` step itself) and
+  reuses that same instance for the `taxonomy_blast` step too when both are configured,
+  rather than loading it twice.
+
+Real regression tests: `tests/test_taxonomy_blast.py` (new, 13 tests) -- `TaxdumpDB`'s
+synonym index and `canonical_species_name()` tested against the two REAL on-record
+synonym pairs above (real taxids, not fabricated), `canonicalize_species_guesses()`
+tested standalone, and a full `run_pipeline()` end-to-end wiring test (no vsearch/blastn
+involved) proving a real synonym pair's `species_guess` columns merge in
+`decisions.tsv` when the flag is on, and are left completely untouched when it's off
+(the default). Full suite: 212 passed (was 199).
+
 ## 1.3.1 — 2026-09-01 (fix: clustering ignored `cluster.by`, causing a ~100 HOUR ETA at real scale)
 
 Real, severe bug found live via a ~10,000-species PalaeoSCOPE Phase B run:

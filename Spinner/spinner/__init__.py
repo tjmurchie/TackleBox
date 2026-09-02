@@ -1,3 +1,3 @@
 """TackleBox: Spinner — reference curation and QC module."""
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"

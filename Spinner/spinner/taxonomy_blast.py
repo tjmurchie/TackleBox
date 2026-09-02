@@ -44,6 +44,7 @@ class TaxdumpDB:
         self.parent: Dict[int, int] = {}
         self.rank: Dict[int, str] = {}
         self.name: Dict[int, str] = {}
+        self.name_to_taxid: Dict[str, int] = {}
         self._load(taxdump_dir)
 
     def _load(self, taxdump_dir: str) -> None:
@@ -83,10 +84,21 @@ class TaxdumpDB:
                     name_class = parts[3].strip()
                     if name_class == "scientific name":
                         self.name[taxid] = name
+                    # Reverse name->taxid index for canonical_species_name() below.
+                    # Covers both "scientific name" and "synonym" classes so that two
+                    # different real names for one species (e.g. a genus reassignment
+                    # like Antigone canadensis / Grus canadensis, both real names for
+                    # NCBI taxid 1977160) resolve to the SAME taxid, and therefore the
+                    # same canonical name via self.name[taxid] -- first name seen for a
+                    # given lowercased string wins (matches this codebase's existing
+                    # first-wins convention, see regions.py's build_genus_abbrev_index).
+                    if name_class in ("scientific name", "synonym"):
+                        self.name_to_taxid.setdefault(name.lower(), taxid)
                 except ValueError:
                     continue
 
-        info(f"Taxdump loaded: {len(self.parent):,} nodes, {len(self.name):,} named taxa")
+        info(f"Taxdump loaded: {len(self.parent):,} nodes, {len(self.name):,} named taxa, "
+             f"{len(self.name_to_taxid):,} name->taxid entries")
 
     def get_lineage(self, taxid: int) -> List[Tuple[str, str]]:
         """Return list of (rank, scientific_name) from species up to root."""
@@ -144,6 +156,63 @@ class TaxdumpDB:
         n1 = self.get_rank_name(taxid1, rank)
         n2 = self.get_rank_name(taxid2, rank)
         return bool(n1 and n2 and n1.lower() == n2.lower())
+
+    def canonical_species_name(self, name: str) -> str:
+        """Resolve *name* (a scientific name OR a known synonym, case-insensitive) to
+        its single NCBI canonical scientific name, via `name_to_taxid` -> `name`.
+
+        Returns *name* unchanged if it doesn't resolve to a known taxid, or if that
+        taxid has no stored scientific name (shouldn't happen for real taxdump data,
+        but degrades gracefully rather than raising). This is what lets two different
+        real names for the same species (e.g. a genus reassignment) collapse to one
+        shared grouping key wherever `species_guess` drives grouping downstream
+        (clustering, capping, cross-species-duplicate rescue) -- see
+        `canonicalize_species_guesses()` below, which is the actual call site.
+        """
+        name = name.strip()
+        if not name:
+            return name
+        taxid = self.name_to_taxid.get(name.lower())
+        if taxid is None:
+            return name
+        return self.name.get(taxid) or name
+
+
+def canonicalize_species_guesses(ann: Dict[str, Annotation], taxdb: TaxdumpDB) -> int:
+    """Rewrite each Annotation's `species_guess` to its taxdump canonical scientific
+    name, in place, when it resolves to a known taxid (as either a scientific name or a
+    synonym) in *taxdb*.
+
+    Real bug motivating this, found 2026-09-01 via a live ~10,000-species PalaeoSCOPE
+    Phase B run's candidate list: real taxonomic synonym pairs (e.g. `Antigone
+    canadensis` / `Grus canadensis`, a genus reassignment -- both real names appear in
+    real GenBank headers depending on when a given record was submitted) parse to two
+    DIFFERENT `species_guess` strings even though they are the same species. Every
+    downstream consumer that groups by raw `species_guess` text --
+    `rescue_cross_species_duplicates()`, `clustering.run_vsearch()`'s `cluster.by`
+    grouping, `capping.cap_refs()`, `capping.rescue_sole_representatives()` -- would
+    then treat what should be one species' pooled candidate set as two smaller,
+    independently-clustered/independently-capped groups. Fixing `species_guess` ONCE,
+    here, immediately after annotation and before any of those four consumers run,
+    means none of them need their own separate fix or awareness of synonyms at all.
+
+    A no-op, deliberately, unless a taxdump is actually loaded (this function is only
+    ever called when `cluster.canonicalize_species_guess` is enabled, see
+    `pipeline.py`) -- most projects have no taxdump configured and keep today's
+    pure-string-matching behavior completely unchanged.
+
+    Returns the number of records whose `species_guess` was changed.
+    """
+    changed = 0
+    for a in ann.values():
+        sp = a.species_guess.strip()
+        if not sp:
+            continue
+        canonical = taxdb.canonical_species_name(sp)
+        if canonical and canonical != sp:
+            a.species_guess = canonical
+            changed += 1
+    return changed
 
 
 # Marker classes for which `taxonomy_blast.max_query_length` exemption is a confident

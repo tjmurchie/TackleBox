@@ -151,6 +151,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "cdhit_path": "cd-hit-est",
         "max_reps_per_cluster": 1,
         "nonrepresentative_action": "review",
+        # Opt-in (default off -- most projects have no taxdump configured): when True
+        # AND taxonomy_blast.taxdump_dir is set, species_guess is canonicalized via the
+        # NCBI taxdump (scientific name + synonym classes) once, right after
+        # annotation, before this "by" grouping (and capping / cross-species-duplicate
+        # rescue, which also group by species_guess) ever runs. See
+        # taxonomy_blast.canonicalize_species_guesses() for the real motivating bug.
+        "canonicalize_species_guess": False,
     },
     "capping": {
         "mode": "species_marker",
