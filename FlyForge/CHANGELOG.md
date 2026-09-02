@@ -1,5 +1,76 @@
 # Changelog
 
+## FlyForge v1.5.0 - 2026-09-02 (new: `--hard-max-baits`/`--min-cluster-identity` -- a real, guaranteed bait-count cap, replacing "reduce references" as the size-control lever)
+
+**Real product motivation**: PalaeoSCOPE's existing size-control knobs (`--max-baits`,
+`--probe-num-cutoff`, self-repeat masking) are all *soft* -- confirmed at real scale to
+overshoot declared targets by 2-6x (`self_blast_filter()`'s internal id-cutoff loop can
+exhaust its range before ever crossing an arbitrary low target), or to control size by
+deleting sequence content outright (masking) rather than collapsing redundant baits down
+to a representative. Neither gives a real guarantee, and neither is the right lever for
+getting an oversized panel down to an affordable, Twist-tier-aligned bait count without
+reducing the underlying reference/target scope -- reducing reference diversity to hit a
+budget number was explicitly rejected as the wrong tradeoff (it discards real biological
+coverage rather than collapsing genuinely redundant baits).
+
+**Real, measured fix**: a new `cluster_baits_vsearch()` helper (`vsearch --cluster_fast`)
+replaces `cd-hit-est` for this use case -- cd-hit-est has a hard-coded `>=0.80` identity
+floor in nucleotide mode (confirmed via direct testing), which is well inside the panel's
+own stated tolerance (up to 25% divergence, i.e. 0.75 identity); vsearch accepts any
+identity in `(0, 1.0]` with no such floor, and is already a project dependency (used by
+Spinner's own clustering). Real timing/quality data, ANIMAL (726,110 real candidates,
+18,541 references): 0.95->234,853 (26s), 0.90->148,425 (21s), 0.85->98,239 (18s),
+0.80->75,526 (15s), 0.75->66,454 (15s) -- confirming the relationship between identity
+and resulting bait count is monotonic and fast to probe even at real production scale.
+
+On top of that, a new `divergence_bounded_cluster()` function provides the actual hard
+cap: given a `min_identity` floor (the loosest divergence tolerance still scientifically
+acceptable, e.g. 0.75) and a `hard_max_baits` ceiling, it binary-searches identity values
+in `[min_identity, 1.0)` for the highest (most fidelity-preserving) identity that still
+clusters down to at or under the cap -- typically converging in a handful of real vsearch
+calls. If even the loosest acceptable identity still exceeds the cap, it says so plainly
+(`feasible: False`) and returns the best-effort (tightest achievable) result rather than
+silently failing to honor the cap or crashing.
+
+Wired in as a new, mutually-required CLI pair, `--min-cluster-identity` and
+`--hard-max-baits` (both `None` by default -- zero behavior change for any existing
+invocation). When both are set, a new `"divergence_cluster"` pipeline step REPLACES the
+existing `redundancy_prereduce`/`self_blast_redundancy`/`clustering` trio entirely (rather
+than running alongside it) -- this is a genuinely different mechanism (identity-targeted
+binary search vs. a fixed-identity single pass), not an addition to the old one. New
+`n_baits_after_divergence_cluster` column in `PREFIX_per_ref_stats.tsv`, new
+`min_cluster_identity`/`hard_max_baits` lines in `PREFIX_summary.tsv`'s parameters
+section, a clear WARNING logged (with the achieved identity and INFEASIBLE flag) when the
+cap could not actually be met.
+
+**Real production-scale validation**, both confirming the mechanism works and surfacing
+an important, honest product finding: run directly against PLANT's real, full
+6,384,410-candidate pool (40,684 curated references, all tracheophytes) with Tyler's own
+example numbers (`min_identity=0.75`, `hard_max_baits=60000`) -- result:
+`feasible: False`, `500,092 baits` in 159.6s (a single vsearch call; the binary search
+short-circuits immediately once the floor identity itself doesn't fit). This is barely
+different from the current pipeline's existing real 506,888-bait PLANT result reached via
+the old redundancy/self-BLAST trio -- meaning PLANT's real bottleneck was never a bad
+algorithm; its current scope genuinely contains ~500K worth of real, >=75%-identity-
+distinguishable content, and reaching a 60K-100K target requires reducing scope (fewer
+species/loci/markers), not more aggressive clustering at fixed scope. This is exactly the
+"a whole chloroplast genome is too much here"-style finding the mechanism was designed to
+surface rather than hide.
+
+New `tests/test_divergence_cluster.py` (19 tests: 7 fast covering the binary-search logic
+via a monkeypatched deterministic `cluster_baits_vsearch`, 7 fast covering CLI validation
+-- both-or-neither, `0.0`/`1.0` range boundaries, `hard_max_baits<1` -- 2 `slow` tests
+against real vsearch, 3 `slow` end-to-end `run_pipeline()` tests including an explicit
+infeasibility-path check). Full suite: 83 passed (was 64), ruff clean (same 2 pre-existing
+unrelated violations elsewhere in the file, confirmed untouched by this change).
+
+**Not yet wired into PalaeoSCOPE's `plan_flyforge()` adapter** -- that's a separate,
+tracked follow-up (new `spec.py` KeySpec entries, schema regeneration, adapter tests).
+Fillet-informativeness-weighted trimming (prioritizing removal of taxonomically
+uninformative baits over organism-specific ones when still over cap at the identity
+floor), multi-tier Twist-pricing-aligned output generation, and explicit scope-reduction
+suggestions are approved, scoped follow-on phases, not yet started.
+
 ## FlyForge v1.4.0 - 2026-09-02 (new, opt-in: `--redundancy-prereduce-identity` -- a ~108x faster redundancy-removal path at real multi-species scale)
 
 **FlyForgeAudit stays at v1.3.0 this release** -- this change is entirely within

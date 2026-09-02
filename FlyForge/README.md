@@ -86,12 +86,14 @@ The fast suite covers the tiling window/step arithmetic (including circular-geno
 wraparound), `compute_tm()`'s behavior on both normal and pathological input,
 `--circular-ids` resolution, self-repeat masking (both its own pure-function
 correctness and the `--skip-self-mask`/`--no-skip-self-mask` CLI default), and
-`--redundancy-prereduce-identity`'s `>=0.80` validation boundary. The `slow` suite runs
-`design_opool()` end to end against real BLAST+/primer3 and verifies the literal oligo
-sequence structure that gets sent for synthesis
+`--redundancy-prereduce-identity`'s `>=0.80` validation boundary, and the
+`--min-cluster-identity`/`--hard-max-baits` binary-search logic and CLI validation. The
+`slow` suite runs `design_opool()` end to end against real BLAST+/primer3 and verifies
+the literal oligo sequence structure that gets sent for synthesis
 (`5'-[T7 promoter][probe][primer reverse-complement]-3'`), including that the probe
-sequence itself survives unmodified in the final assembled oligo, plus a real end-to-end
-`--redundancy-prereduce-identity` run against actual `cd-hit-est`/`blastn`.
+sequence itself survives unmodified in the final assembled oligo, plus real end-to-end
+`--redundancy-prereduce-identity` and `--hard-max-baits` runs against actual
+`cd-hit-est`/`vsearch`/`blastn`.
 
 ## Quick start
 
@@ -242,6 +244,36 @@ FlyForge \
   --threads 16
 ```
 
+### Hard bait-count cap (Twist-tier-aligned affordability targets)
+
+When a panel needs to fit a specific, non-negotiable bait count (e.g. a Twist pricing
+tier boundary), `--min-cluster-identity`/`--hard-max-baits` (v1.5.0+, both required
+together, default disabled) replace the trio above entirely with a single
+divergence-bounded clustering step. Give it the loosest divergence tolerance still
+scientifically acceptable for the project (e.g. `0.75` = 25% divergence) as
+`--min-cluster-identity`, and the real ceiling as `--hard-max-baits` -- the pipeline
+binary-searches identity within that floor for the tightest cap-respecting result, and
+reports plainly (`INFEASIBLE` in the progress log) if even the loosest tolerance can't
+reach the target, rather than silently exceeding it or crashing:
+
+```bash
+FlyForge \
+  -i targets/*.fasta \
+  --prefix affordable_panel \
+  --bait-length 80 \
+  --tiling-density 3 \
+  --min-tm 50 \
+  --remove-complements \
+  --min-cluster-identity 0.75 \
+  --hard-max-baits 60000 \
+  --threads 16
+```
+
+If this reports infeasible at your real project's scale, that's a real signal the target
+needs less scope (fewer species/loci/markers), not a tighter identity search -- reducing
+reference diversity to hit a bait-count budget is not something this flag will do for
+you.
+
 ## Companion module: FlyForgeAudit
 
 This repository now also includes **FlyForgeAudit**, a companion module for:
@@ -257,6 +289,9 @@ See `FlyForgeAudit_README.md` for full documentation.
 If you use FlyForge, cite this software and the CARPDM publication that established the in-house oligo-pool synthesis strategy.
 
 ## Recent updates
+- `--min-cluster-identity`/`--hard-max-baits` (v1.5.0) provide a real, guaranteed hard cap
+  on final bait count via divergence-bounded vsearch clustering, replacing the old soft
+  `--max-baits`/masking-based size controls for panels that must fit an exact budget.
 - Circular targets can now be enabled with `--circular` (all references) or `--circular-ids ref1,ref2` (selected references). This is useful for mitochondrial, plastid, viral, plasmid, and other circular genomes so baits can wrap across the linearized ends.
 - FlyForgeAudit now distinguishes **actionable flags** from **informational notes** in the terminal summary and prints the recommendation text directly at the end of the run.
 - FlyForgeAudit now includes an `opool` mode that converts an existing bare-bait FASTA directly into an order-ready oligo pool and amplification-primer FASTA without redesigning the panel.

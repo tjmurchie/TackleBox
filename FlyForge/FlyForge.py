@@ -63,7 +63,7 @@ from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -107,6 +107,7 @@ class RefStats:
     n_baits_after_prereduce: int = 0
     n_baits_after_cluster: int = 0
     n_baits_after_redundancy: int = 0
+    n_baits_after_divergence_cluster: int = 0
     n_baits_final: int = 0
     coverage_mean: float = 0.0
     coverage_min: int = 0
@@ -174,6 +175,7 @@ class ProgressTracker:
         "redundancy_prereduce":  "cd-hit-est redundancy pre-reduction",
         "self_blast_redundancy": "Self-BLAST redundancy filter",
         "clustering":            "cd-hit-est clustering",
+        "divergence_cluster":    "Divergence-bounded clustering (hard cap)",
         "opool_design":          "Designing oligo pool (T7 + primer)",
         "validation":            "BLAST validation & analysis",
         "write_output":          "Writing output files",
@@ -979,6 +981,146 @@ def cluster_baits_cd_hit(baits: List[Bait], identity: float = 0.95,
     return kept, len(baits) - len(kept)
 
 
+def cluster_baits_vsearch(baits: List[Bait], identity: float,
+                          threads: int = 1,
+                          vsearch_path: str = "vsearch") -> Tuple[List[Bait], int]:
+    """Cluster baits using vsearch --cluster_fast, keeping one representative (centroid)
+    per cluster. Same shape/contract as `cluster_baits_cd_hit()` (real FASTA round-trip,
+    not an arithmetic count), but uses vsearch instead of cd-hit-est because vsearch's
+    `--id` genuinely accepts any value in [0, 1] -- cd-hit-est hard-refuses identity
+    below 0.80 in nucleotide mode ("invalid clstr threshold, should >=0.8", confirmed
+    2026-09-02, not a word-length tuning issue), which is stricter than real
+    hybridization-capture divergence tolerances (e.g. 25% divergence = 0.75 identity)
+    this function needs to support. Real timing on production data: 15-26s for a real
+    726,110-bait pool, 399s for a real 6,384,410-bait pool (both confirmed 2026-09-02) --
+    fast enough to call repeatedly from `divergence_bounded_cluster()`'s binary search
+    below.
+
+    Centroid selection note: `--cluster_fast` sorts candidates by length before greedily
+    assigning centroids. Every bait here is the same fixed length, so this provides no
+    real discrimination -- the centroid kept from each cluster is effectively "whichever
+    came first in the input FASTA," not a quality-ranked choice. Every candidate has
+    already passed this module's own Tm/GC/ambiguity filters earlier in the pipeline, so
+    this never picks from a genuinely bad candidate, just an unoptimized one among
+    several good ones -- a real, deliberate scope limit of this function, not a bug.
+    """
+    if not baits:
+        return baits, 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_fa = os.path.join(tmpdir, "baits_in.fasta")
+        out_fa = os.path.join(tmpdir, "baits_vsearch.fasta")
+        write_fasta(in_fa, [(b.bait_id, b.seq) for b in baits])
+
+        cmd = [
+            vsearch_path, "--cluster_fast", in_fa, "--id", str(identity),
+            "--threads", str(threads), "--centroids", out_fa, "--qmask", "none",
+        ]
+
+        try:
+            subprocess.run(cmd, check=True,
+                           stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        except FileNotFoundError:
+            sys.stderr.write("WARNING: vsearch not found; skipping clustering.\n")
+            return baits, 0
+
+        kept_ids = set()
+        with open(out_fa) as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    kept_ids.add(line[1:].strip().split()[0])
+
+    id_to_bait = {b.bait_id: b for b in baits}
+    kept = [id_to_bait[i] for i in kept_ids if i in id_to_bait]
+    return kept, len(baits) - len(kept)
+
+
+def divergence_bounded_cluster(
+    baits: List[Bait], min_identity: float, hard_max_baits: int,
+    threads: int = 1, vsearch_path: str = "vsearch",
+    identity_tolerance: float = 0.01, max_search_iterations: int = 10,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Tuple[List[Bait], dict]:
+    """Binary-searches vsearch's identity threshold (see `cluster_baits_vsearch()`) to
+    find the TIGHTEST (highest, most fidelity-preserving) identity that still yields
+    <= `hard_max_baits` baits, never searching below `min_identity` -- the real
+    scientific divergence floor below which two baits should not be treated as
+    interchangeable for hybridization-capture purposes (e.g. `min_identity=0.75` for a
+    25% maximum-divergence tolerance).
+
+    This is a real, deliberate departure from every other size-control knob in this
+    module (`--max-baits`, `--probe-num-cutoff`): those are SOFT targets that can be,
+    and routinely are, overshot at real scale (confirmed: both the real ANIMAL and real
+    PLANT retests landed well over their intended budgets, because self_blast_filter()'s
+    id_cutoff loop can exhaust its full range before crossing an arbitrary low target).
+    `hard_max_baits` is a real, load-bearing guarantee: the caller can rely on the
+    returned bait count never exceeding it, because vsearch clustering doesn't have that
+    same failure mode -- lowering `--id` always removes at least as many baits, so if
+    `min_identity` itself doesn't fit under the cap, NOTHING will, and that is reported
+    as `feasible=False` rather than silently returned anyway.
+
+    Real motivating context, 2026-09-02: real oligo-pool synthesis pricing (Twist) is a
+    hard step function -- landing one oligo over a tier boundary can mean paying for an
+    entire extra pricing tier (confirmed real quote data: 96,001-120,000 oligos = a
+    single flat price regardless of exactly how far into that range you land). A soft
+    target that can overshoot by 5x is not good enough for real ordering decisions; a
+    real guarantee is.
+
+    Returns `(kept_baits, result)` where `result` is a dict with:
+      - `feasible`: bool -- whether a fitting identity was found at/above `min_identity`.
+      - `achieved_identity`: the identity actually used for the returned `kept_baits`
+        (either the tightest fitting one found, or `min_identity` itself if even that
+        wasn't enough -- the best-effort result is still returned in the infeasible
+        case, since "as close as science allows" is more useful to the caller than
+        nothing).
+      - `iterations`: list of `{identity, n_baits}` dicts, one per real vsearch call
+        made, in the order they were run -- full transparency into the search, mirroring
+        this project's "every trial retained" convention elsewhere in PalaeoSCOPE.
+    """
+    iterations: List[dict] = []
+
+    def _log(msg: str) -> None:
+        if log_fn is not None:
+            log_fn(msg)
+
+    def _try(identity: float) -> Tuple[List[Bait], int]:
+        kept, removed = cluster_baits_vsearch(baits, identity, threads=threads,
+                                              vsearch_path=vsearch_path)
+        iterations.append({"identity": identity, "n_baits": len(kept)})
+        _log(f"  divergence_bounded_cluster: identity={identity:.4f} -> "
+             f"{len(kept):,} baits")
+        return kept, removed
+
+    if len(baits) <= hard_max_baits:
+        return baits, {"feasible": True, "achieved_identity": None,
+                       "iterations": iterations}
+
+    floor_kept, _ = _try(min_identity)
+    if len(floor_kept) > hard_max_baits:
+        # Even the loosest scientifically-acceptable clustering doesn't fit -- real
+        # infeasibility, not something to force. Still return the best-effort result
+        # (closest legal approximation) rather than nothing.
+        return floor_kept, {"feasible": False, "achieved_identity": min_identity,
+                            "iterations": iterations}
+
+    # Binary search for the highest identity in [min_identity, 1.0) that still fits.
+    # Invariant: `low` is always the tightest identity CONFIRMED to fit so far.
+    low, low_kept = min_identity, floor_kept
+    high = 1.0
+    n_iter = 0
+    while (high - low) > identity_tolerance and n_iter < max_search_iterations:
+        mid = (low + high) / 2
+        mid_kept, _ = _try(mid)
+        if len(mid_kept) <= hard_max_baits:
+            low, low_kept = mid, mid_kept
+        else:
+            high = mid
+        n_iter += 1
+
+    return low_kept, {"feasible": True, "achieved_identity": low,
+                      "iterations": iterations}
+
+
 # ============================================================================
 # O-Pool design: T7 promoter + primer design (from CARPDM)
 # ============================================================================
@@ -1681,6 +1823,26 @@ def run_pipeline(args):
             log_handle.close()
         sys.exit(1)
 
+    if (args.min_cluster_identity is None) != (args.hard_max_baits is None):
+        log("ERROR: --min-cluster-identity and --hard-max-baits must be set together "
+            "(one controls how loosely baits may be collapsed, the other the resulting "
+            "hard cap -- neither means anything alone). Aborting.")
+        if log_handle is not None:
+            log_handle.close()
+        sys.exit(1)
+    if args.min_cluster_identity is not None and not (0.0 < args.min_cluster_identity < 1.0):
+        log(f"ERROR: --min-cluster-identity must be >0.0 and <1.0 (it's a real "
+            f"hybridization-capture divergence tolerance, e.g. 0.75 for a 25% maximum "
+            f"divergence); got {args.min_cluster_identity}. Aborting.")
+        if log_handle is not None:
+            log_handle.close()
+        sys.exit(1)
+    if args.hard_max_baits is not None and args.hard_max_baits < 1:
+        log(f"ERROR: --hard-max-baits must be >=1; got {args.hard_max_baits}. Aborting.")
+        if log_handle is not None:
+            log_handle.close()
+        sys.exit(1)
+
     # Track steps for progress
     steps_planned = ["preprocessing"]
     if args.remove_complements:
@@ -1699,12 +1861,20 @@ def run_pipeline(args):
         steps_planned.append("blast_filter")
     if args.specificity_db:
         steps_planned.append("specificity_filter")
-    if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
-        steps_planned.append("redundancy_prereduce")
-    if not args.no_redundancy:
-        steps_planned.append("self_blast_redundancy")
-    if not args.no_cluster:
-        steps_planned.append("clustering")
+    # --min-cluster-identity/--hard-max-baits (real, GUARANTEED cap) REPLACES the
+    # redundancy-prereduce/self-BLAST/clustering trio entirely when set -- see
+    # divergence_bounded_cluster()'s own docstring for why those three don't offer a
+    # real guarantee at real scale. Validated above that these two flags are only ever
+    # both-set or both-unset.
+    if args.hard_max_baits is not None:
+        steps_planned.append("divergence_cluster")
+    else:
+        if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
+            steps_planned.append("redundancy_prereduce")
+        if not args.no_redundancy:
+            steps_planned.append("self_blast_redundancy")
+        if not args.no_cluster:
+            steps_planned.append("clustering")
     if not args.no_opool:
         steps_planned.append("opool_design")
     steps_planned.append("validation")
@@ -1937,53 +2107,88 @@ def run_pipeline(args):
         progress.finish_step("specificity_filter",
                              details=f"{removed_spec} removed; {len(all_baits)} remain")
 
-    # ===== 12b. Optional cd-hit-est pre-reduction before self-BLAST redundancy filter =====
-    # See --redundancy-prereduce-identity's own help text for the real finding motivating
-    # this: at real multi-species scale with masking disabled, self_blast_filter()'s
-    # all-vs-all blastn + post-processing loop can take hours. Reuses cluster_baits_cd_hit()
-    # unchanged (the same function the later, separate clustering step already calls) --
-    # this is deliberately just a cheap pre-pass ahead of self_blast_filter(), not a
-    # replacement for it: self_blast_filter()'s own redundancy logic still runs afterward,
-    # completely unmodified, just against a smaller, pre-deduplicated candidate pool.
-    if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
-        progress.start_step("redundancy_prereduce")
-        all_baits, removed_prereduce = cluster_baits_cd_hit(
-            all_baits, identity=args.redundancy_prereduce_identity,
-            overlap=args.cluster_overlap, threads=args.threads)
-        s = summarize_baits("after_prereduce", all_baits)
-        s["removed"] = removed_prereduce
+    if args.hard_max_baits is not None:
+        # ===== 12b. Divergence-bounded clustering (real, GUARANTEED hard cap) =====
+        # Replaces the redundancy-prereduce/self-BLAST/clustering trio entirely -- see
+        # divergence_bounded_cluster()'s own docstring for the real finding motivating
+        # this: --max-baits/--probe-num-cutoff are SOFT targets, confirmed to overshoot
+        # by 2-6x at real production scale, because self_blast_filter()'s own loop can
+        # exhaust its range before crossing an arbitrary low target. Real oligo-pool
+        # pricing is a hard step function, so a soft target isn't good enough for a real
+        # ordering decision.
+        progress.start_step("divergence_cluster")
+        n_before_divergence_cluster = len(all_baits)
+        all_baits, div_result = divergence_bounded_cluster(
+            all_baits, min_identity=args.min_cluster_identity,
+            hard_max_baits=args.hard_max_baits, threads=args.threads, log_fn=log)
+        s = summarize_baits("after_divergence_cluster", all_baits)
+        s["removed"] = n_before_divergence_cluster - len(all_baits)
         stats.append(s)
-        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
-        progress.finish_step("redundancy_prereduce",
-                             details=f"{removed_prereduce} removed; {len(all_baits)} remain")
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_divergence_cluster')
+        if not div_result["feasible"]:
+            log(f"WARNING: --hard-max-baits={args.hard_max_baits} could not be met even "
+                f"at the --min-cluster-identity={args.min_cluster_identity} divergence "
+                f"floor -- {len(all_baits):,} baits remain (best effort at the loosest "
+                f"scientifically-acceptable clustering). This is real infeasibility, not "
+                f"a bug: the underlying reference diversity genuinely needs more baits "
+                f"than the cap allows at this divergence tolerance. Consider narrowing "
+                f"scope (fewer targets, shorter marker regions) rather than loosening "
+                f"the divergence floor further.")
+        progress.finish_step(
+            "divergence_cluster",
+            details=(f"achieved_identity="
+                     f"{div_result['achieved_identity'] if div_result['achieved_identity'] else 'n/a (already under cap)'}"
+                     f"; {len(all_baits):,} remain"
+                     f"{' [INFEASIBLE, best effort]' if not div_result['feasible'] else ''}"))
+    else:
+        # ===== 12c. Optional cd-hit-est pre-reduction before self-BLAST redundancy filter =====
+        # See --redundancy-prereduce-identity's own help text for the real finding
+        # motivating this: at real multi-species scale with masking disabled,
+        # self_blast_filter()'s all-vs-all blastn + post-processing loop can take hours.
+        # Reuses cluster_baits_cd_hit() unchanged (the same function the later, separate
+        # clustering step already calls) -- this is deliberately just a cheap pre-pass
+        # ahead of self_blast_filter(), not a replacement for it: self_blast_filter()'s
+        # own redundancy logic still runs afterward, completely unmodified, just against
+        # a smaller, pre-deduplicated candidate pool.
+        if not args.no_redundancy and args.redundancy_prereduce_identity is not None:
+            progress.start_step("redundancy_prereduce")
+            all_baits, removed_prereduce = cluster_baits_cd_hit(
+                all_baits, identity=args.redundancy_prereduce_identity,
+                overlap=args.cluster_overlap, threads=args.threads)
+            s = summarize_baits("after_prereduce", all_baits)
+            s["removed"] = removed_prereduce
+            stats.append(s)
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
+            progress.finish_step("redundancy_prereduce",
+                                 details=f"{removed_prereduce} removed; {len(all_baits)} remain")
 
-    # ===== 13. Self-BLAST redundancy filter =====
-    if not args.no_redundancy:
-        progress.start_step("self_blast_redundancy")
-        all_baits, n_comp_rm, n_red_rm = self_blast_filter(
-            all_baits, args.output_dir, args.prefix, args.threads,
-            args.probe_num_cutoff, log)
-        s = summarize_baits("after_self_blast_filter", all_baits)
-        s["removed_complementary"] = n_comp_rm
-        s["removed_redundant"] = n_red_rm
-        stats.append(s)
-        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_redundancy')
-        progress.finish_step("self_blast_redundancy",
-                             details=f"{n_comp_rm + n_red_rm} removed; "
-                                     f"{len(all_baits)} remain")
+        # ===== 13. Self-BLAST redundancy filter =====
+        if not args.no_redundancy:
+            progress.start_step("self_blast_redundancy")
+            all_baits, n_comp_rm, n_red_rm = self_blast_filter(
+                all_baits, args.output_dir, args.prefix, args.threads,
+                args.probe_num_cutoff, log)
+            s = summarize_baits("after_self_blast_filter", all_baits)
+            s["removed_complementary"] = n_comp_rm
+            s["removed_redundant"] = n_red_rm
+            stats.append(s)
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_redundancy')
+            progress.finish_step("self_blast_redundancy",
+                                 details=f"{n_comp_rm + n_red_rm} removed; "
+                                         f"{len(all_baits)} remain")
 
-    # ===== 14. cd-hit-est clustering =====
-    if not args.no_cluster:
-        progress.start_step("clustering")
-        all_baits, removed_cluster = cluster_baits_cd_hit(
-            all_baits, identity=args.cluster_identity,
-            overlap=args.cluster_overlap, threads=args.threads)
-        s = summarize_baits("after_clustering", all_baits)
-        s["removed"] = removed_cluster
-        stats.append(s)
-        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_cluster')
-        progress.finish_step("clustering",
-                             details=f"{removed_cluster} removed; {len(all_baits)} remain")
+        # ===== 14. cd-hit-est clustering =====
+        if not args.no_cluster:
+            progress.start_step("clustering")
+            all_baits, removed_cluster = cluster_baits_cd_hit(
+                all_baits, identity=args.cluster_identity,
+                overlap=args.cluster_overlap, threads=args.threads)
+            s = summarize_baits("after_clustering", all_baits)
+            s["removed"] = removed_cluster
+            stats.append(s)
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_cluster')
+            progress.finish_step("clustering",
+                                 details=f"{removed_cluster} removed; {len(all_baits)} remain")
 
     # Update final counts
     _update_ref_counts(ref_stats, all_baits, 'n_baits_final')
@@ -2054,6 +2259,7 @@ def run_pipeline(args):
             "n_baits_tiled", "n_baits_after_amb", "n_baits_after_mask",
             "n_baits_after_tm", "n_baits_after_blast", "n_baits_after_prereduce",
             "n_baits_after_cluster", "n_baits_after_redundancy",
+            "n_baits_after_divergence_cluster",
             "n_baits_final",
             "coverage_mean", "coverage_min", "coverage_max",
             "coverage_fraction_covered", "proportion_of_final_baits",
@@ -2068,7 +2274,8 @@ def run_pipeline(args):
                 str(rs.n_baits_after_mask), str(rs.n_baits_after_tm),
                 str(rs.n_baits_after_blast), str(rs.n_baits_after_prereduce),
                 str(rs.n_baits_after_cluster),
-                str(rs.n_baits_after_redundancy), str(rs.n_baits_final),
+                str(rs.n_baits_after_redundancy),
+                str(rs.n_baits_after_divergence_cluster), str(rs.n_baits_final),
                 f"{rs.coverage_mean:.6f}", str(rs.coverage_min),
                 str(rs.coverage_max), f"{rs.coverage_fraction_covered:.6f}",
                 f"{rs.proportion_of_final_baits:.6f}",
@@ -2115,6 +2322,12 @@ def run_pipeline(args):
             "redundancy_prereduce_identity": (
                 args.redundancy_prereduce_identity
                 if args.redundancy_prereduce_identity is not None else "N/A"
+            ),
+            "min_cluster_identity": (
+                args.min_cluster_identity if args.min_cluster_identity is not None else "N/A"
+            ),
+            "hard_max_baits": (
+                args.hard_max_baits if args.hard_max_baits is not None else "N/A"
             ),
             "no_opool": args.no_opool,
             "threads": args.threads,
@@ -2402,6 +2615,36 @@ Examples:
                          "cd-hit-est fail with a cryptic subprocess error. Has no effect if "
                          "--no-redundancy is also set (there is no self-BLAST step left to "
                          "precede).")
+    ap.add_argument("--min-cluster-identity", type=float, default=None,
+                    help="Optional, must be set together with --hard-max-baits (default: "
+                         "disabled, no change to existing behavior). The real minimum "
+                         "acceptable sequence identity for two baits to be treated as "
+                         "interchangeable for hybridization-capture purposes -- e.g. 0.75 "
+                         "for a 25%% maximum divergence tolerance. This is a real scientific "
+                         "floor, never crossed: baits are never collapsed together below "
+                         "this identity no matter how far over --hard-max-baits the panel "
+                         "still is. Must be >0.0 and <1.0.")
+    ap.add_argument("--hard-max-baits", type=int, default=None,
+                    help="Optional, must be set together with --min-cluster-identity "
+                         "(default: disabled, no change to existing behavior). A real, "
+                         "GUARANTEED maximum final bait count -- unlike --max-baits/"
+                         "--probe-num-cutoff (both confirmed, 2026-09-02, to overshoot by "
+                         "2-6x at real production scale, since self_blast_filter()'s own "
+                         "redundancy loop can exhaust its range before crossing an "
+                         "arbitrary low target), this is enforced by binary-searching "
+                         "vsearch's identity threshold (see divergence_bounded_cluster()) "
+                         "down to --min-cluster-identity if needed. Real motivation: oligo-"
+                         "pool synthesis pricing is a hard step function -- one oligo over "
+                         "a tier boundary can mean paying for an entire extra pricing tier, "
+                         "so a soft target isn't good enough for a real ordering decision. "
+                         "When set, REPLACES --redundancy-prereduce-identity/the self-BLAST "
+                         "redundancy filter/cd-hit-est clustering entirely (those flags are "
+                         "ignored if also given). If even --min-cluster-identity isn't "
+                         "enough to reach this cap, FlyForge logs a clear warning and "
+                         "returns its best-effort result rather than silently exceeding the "
+                         "cap or crashing -- real infeasibility should prompt narrowing "
+                         "scope (fewer targets, shorter marker regions), not a looser "
+                         "divergence floor.")
 
     # O-pool synthesis
     ap.add_argument("--no-opool", action="store_true",
