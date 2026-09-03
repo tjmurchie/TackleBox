@@ -63,7 +63,7 @@ from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -1812,6 +1812,13 @@ def run_pipeline(args):
     log, log_handle = make_logger(args.progress_log)
     t_start = time.time()
 
+    # Set from divergence_bounded_cluster()'s real result below (only when
+    # --hard-max-baits is used) -- surfaced in summary.tsv so callers (e.g.
+    # PalaeoSCOPE's own informativeness-trimming follow-up) can detect real
+    # infeasibility structurally, without parsing free-text progress-log lines.
+    hard_max_baits_feasible = None
+    hard_max_baits_achieved_identity = None
+
     if args.redundancy_prereduce_identity is not None and not (
         0.80 <= args.redundancy_prereduce_identity < 1.0
     ):
@@ -2125,6 +2132,8 @@ def run_pipeline(args):
         s["removed"] = n_before_divergence_cluster - len(all_baits)
         stats.append(s)
         _update_ref_counts(ref_stats, all_baits, 'n_baits_after_divergence_cluster')
+        hard_max_baits_feasible = div_result["feasible"]
+        hard_max_baits_achieved_identity = div_result["achieved_identity"]
         if not div_result["feasible"]:
             log(f"WARNING: --hard-max-baits={args.hard_max_baits} could not be met even "
                 f"at the --min-cluster-identity={args.min_cluster_identity} divergence "
@@ -2328,6 +2337,14 @@ def run_pipeline(args):
             ),
             "hard_max_baits": (
                 args.hard_max_baits if args.hard_max_baits is not None else "N/A"
+            ),
+            "hard_max_baits_feasible": (
+                hard_max_baits_feasible if hard_max_baits_feasible is not None else "N/A"
+            ),
+            "hard_max_baits_achieved_identity": (
+                "N/A" if hard_max_baits_feasible is None
+                else hard_max_baits_achieved_identity if hard_max_baits_achieved_identity is not None
+                else "n/a (already under cap)"
             ),
             "no_opool": args.no_opool,
             "threads": args.threads,

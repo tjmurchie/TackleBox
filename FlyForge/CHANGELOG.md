@@ -1,5 +1,27 @@
 # Changelog
 
+## FlyForge v1.5.1 - 2026-09-02 (new: structured `hard_max_baits_feasible`/`hard_max_baits_achieved_identity` fields in `_summary.tsv`)
+
+Small, real follow-up needed while building PalaeoSCOPE's Phase 2 (Fillet
+informativeness-weighted trimming, `palaeoscope trim-to-cap`): that new command needs to
+detect, structurally, whether a completed `--hard-max-baits` run was genuinely
+`INFEASIBLE` before deciding whether to run at all -- v1.5.0 only ever surfaced this via
+a free-text `WARNING`/`[INFEASIBLE, best effort]` line in the progress log, which a
+downstream tool would have had to regex-parse (fragile, and inconsistent with every other
+real per-run fact this file already exposes structurally).
+
+Two new `_summary.tsv` parameter lines, populated only when `--hard-max-baits` is set
+(`"N/A"` otherwise, matching every other conditional field's own convention):
+`hard_max_baits_feasible` (`True`/`False`) and `hard_max_baits_achieved_identity` (the
+real identity `divergence_bounded_cluster()` converged to, or `"n/a (already under cap)"`
+when the pool never needed clustering at all). No behavior change -- purely additive
+output.
+
+Existing `tests/test_divergence_cluster.py` pipeline-integration tests extended with real
+assertions on these two new fields (feasible+achieved-identity, infeasible+floor-identity,
+and the all-`N/A` disabled-by-default case) rather than new test functions -- same test
+count, 83 passed, ruff clean.
+
 ## FlyForge v1.5.0 - 2026-09-02 (new: `--hard-max-baits`/`--min-cluster-identity` -- a real, guaranteed bait-count cap, replacing "reduce references" as the size-control lever)
 
 **Real product motivation**: PalaeoSCOPE's existing size-control knobs (`--max-baits`,

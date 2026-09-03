@@ -290,6 +290,9 @@ class TestPipelineIntegration:
         final_baits = list(ff.read_fasta(str(outdir / "test_final_baits.fa")).keys())
         assert len(final_baits) <= 20  # the real, guaranteed hard cap
 
+        assert "hard_max_baits_feasible\tTrue" in summary_text
+        assert "hard_max_baits_achieved_identity\t0." in summary_text  # a real identity, not N/A
+
     def test_hard_cap_reports_infeasibility_when_unachievable(self, tmp_path):
         """This exact dataset's 42 raw candidates only compress to 12 even at the 0.75
         floor -- a cap of 5 is genuinely unachievable without violating the divergence
@@ -317,6 +320,10 @@ class TestPipelineIntegration:
         final_baits = list(ff.read_fasta(str(outdir / "test_final_baits.fa")).keys())
         assert len(final_baits) == 12  # real best-effort result at the floor, not 5
 
+        summary_text = (outdir / "test_summary.tsv").read_text(encoding="utf-8")
+        assert "hard_max_baits_feasible\tFalse" in summary_text
+        assert "hard_max_baits_achieved_identity\t0.75" in summary_text
+
     def test_disabled_by_default_leaves_no_divergence_cluster_trace(self, tmp_path):
         fasta = tmp_path / "in.fasta"
         self._write_fasta(fasta)
@@ -332,3 +339,5 @@ class TestPipelineIntegration:
         summary_text = (outdir / "test_summary.tsv").read_text(encoding="utf-8")
         assert "after_divergence_cluster" not in summary_text
         assert "after_self_blast_filter" in summary_text  # old path still runs by default
+        assert "hard_max_baits_feasible\tN/A" in summary_text
+        assert "hard_max_baits_achieved_identity\tN/A" in summary_text
