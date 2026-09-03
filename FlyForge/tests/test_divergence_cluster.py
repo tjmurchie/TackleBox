@@ -341,3 +341,93 @@ class TestPipelineIntegration:
         assert "after_self_blast_filter" in summary_text  # old path still runs by default
         assert "hard_max_baits_feasible\tN/A" in summary_text
         assert "hard_max_baits_achieved_identity\tN/A" in summary_text
+
+    @staticmethod
+    def _read_per_ref_rows_with_final_baits(per_ref_path: Path) -> list[dict[str, str]]:
+        lines = per_ref_path.read_text(encoding="utf-8").splitlines()
+        header = lines[0].split("\t")
+        rows = [dict(zip(header, line.split("\t"), strict=True)) for line in lines[1:]]
+        return [r for r in rows if int(r["n_baits_final"]) > 0]
+
+    def test_hard_cap_carries_forward_skipped_trio_columns(self, tmp_path):
+        """Real bug found 2026-09-03 while investigating PLANT's own real
+        per_ref_stats.tsv (an ANIMAL --hard-max-baits run's per-ref columns showed
+        n_baits_after_divergence_cluster > 0 for references where the preceding
+        n_baits_after_prereduce/redundancy/cluster columns all read 0 -- internally
+        impossible if those were real sequential counts). Root cause: when
+        --hard-max-baits is set, the old prereduce/self-BLAST/clustering trio never
+        runs at all, so RefStats' dataclass default of 0 silently stood in for "not
+        applicable," indistinguishable from "this reference lost every bait here."
+        Fixed by carrying the real post-divergence-cluster count forward into all
+        three columns instead."""
+        fasta = tmp_path / "in.fasta"
+        self._write_fasta(fasta)
+        outdir = tmp_path / "out"
+        parser = _make_parser()
+        args = parser.parse_args([
+            "-i", str(fasta), "--prefix", "test", "--output-dir", str(outdir),
+            "--bait-length", "40", "--tiling-density", "3", "--min-tm", "0",
+            "--no-opool", "--min-cluster-identity", "0.75", "--hard-max-baits", "20",
+            "--threads", "2",
+        ])
+        ff.run_pipeline(args)
+
+        rows = self._read_per_ref_rows_with_final_baits(outdir / "test_per_ref_stats.tsv")
+        assert rows  # sanity: the fixture must produce >=1 surviving reference
+        for row in rows:
+            div_cluster_count = int(row["n_baits_after_divergence_cluster"])
+            assert div_cluster_count > 0
+            assert int(row["n_baits_after_prereduce"]) == div_cluster_count
+            assert int(row["n_baits_after_redundancy"]) == div_cluster_count
+            assert int(row["n_baits_after_cluster"]) == div_cluster_count
+
+    def test_soft_cap_carries_forward_divergence_cluster_column(self, tmp_path):
+        """Mirror image of the hard-cap case above: without --hard-max-baits,
+        divergence_cluster never runs, so ITS column must carry the trio's real
+        final count forward instead of staying at the same misleading 0 default."""
+        fasta = tmp_path / "in.fasta"
+        self._write_fasta(fasta)
+        outdir = tmp_path / "out"
+        parser = _make_parser()
+        args = parser.parse_args([
+            "-i", str(fasta), "--prefix", "test", "--output-dir", str(outdir),
+            "--bait-length", "40", "--tiling-density", "3", "--min-tm", "0",
+            "--no-opool", "--threads", "2",
+        ])
+        ff.run_pipeline(args)
+
+        rows = self._read_per_ref_rows_with_final_baits(outdir / "test_per_ref_stats.tsv")
+        assert rows
+        for row in rows:
+            cluster_count = int(row["n_baits_after_cluster"])
+            assert cluster_count > 0
+            assert int(row["n_baits_after_divergence_cluster"]) == cluster_count
+
+    def test_skipped_tm_and_blast_filter_columns_carry_forward_not_zero(self, tmp_path):
+        """Same bug class, but for the earlier, always-optional tm_filter (only runs
+        if --min-tm > 0) and blast_filter (only runs if --blast-db is set) -- these
+        were already silently zeroing their own columns whenever skipped, in EVERY
+        run mode (not just --hard-max-baits), since before this fix they were never
+        even reached when hard_max_baits was set either."""
+        fasta = tmp_path / "in.fasta"
+        self._write_fasta(fasta)
+        outdir = tmp_path / "out"
+        parser = _make_parser()
+        args = parser.parse_args([
+            "-i", str(fasta), "--prefix", "test", "--output-dir", str(outdir),
+            "--bait-length", "40", "--tiling-density", "3", "--min-tm", "0",
+            "--no-opool", "--threads", "2",
+        ])
+        ff.run_pipeline(args)
+
+        rows = self._read_per_ref_rows_with_final_baits(outdir / "test_per_ref_stats.tsv")
+        assert rows
+        for row in rows:
+            mask_count = int(row["n_baits_after_mask"])
+            assert mask_count > 0  # sanity on the fixture itself
+            # --min-tm 0 skips tm_filter entirely; masked_filter is the immediately
+            # preceding step with no other step in between, so this must be exact.
+            assert int(row["n_baits_after_tm"]) == mask_count
+            # No --blast-db set, so blast_filter is skipped -- must carry forward
+            # the real (nonzero) count rather than the old stale-0 default.
+            assert int(row["n_baits_after_blast"]) > 0

@@ -1,5 +1,36 @@
 # Changelog
 
+## FlyForge v1.5.2 - 2026-09-03 (fix: `per_ref_stats.tsv` columns for skipped steps silently defaulted to 0)
+
+**Real bug, found while investigating a real PLANT/ANIMAL panel-design finding for
+PalaeoSCOPE** (why 66% of PLANT's curated references end up with zero final baits):
+cross-checking the ANIMAL `--hard-max-baits` CLI integration test's own
+`per_ref_stats.tsv` turned up rows where `n_baits_after_divergence_cluster` was nonzero
+while the preceding `n_baits_after_prereduce`/`n_baits_after_redundancy`/
+`n_baits_after_cluster` columns all read 0 -- internally impossible if those were real
+sequential per-step counts, since a later step can't have more baits than an earlier
+one showed as fully zeroed.
+
+**Root cause**: `RefStats`' bait-count fields (`n_baits_after_tm`, `n_baits_after_blast`,
+`n_baits_after_prereduce`, `n_baits_after_redundancy`, `n_baits_after_cluster`,
+`n_baits_after_divergence_cluster`) all default to `0` and are only ever updated when
+their corresponding pipeline step actually runs. Several of these steps are conditional
+(`tm_filter` only if `--min-tm > 0`; `blast_filter` only if `--blast-db` set; the whole
+`prereduce`/`self_blast_redundancy`/`clustering` trio is skipped entirely whenever
+`--hard-max-baits` is set, and `divergence_cluster` is skipped whenever it *isn't*) --
+whenever a step was skipped, its column silently kept the dataclass default of `0`,
+indistinguishable from "every reference genuinely lost all its baits here."
+
+**Fix**: every conditional step now carries the current (unchanged) bait count forward
+into its own `RefStats` column when skipped, instead of leaving it at the stale `0`
+default. No change to `all_baits` itself, `summary.tsv`, or final output -- purely a
+per-reference reporting-accuracy fix in `per_ref_stats.tsv`.
+
+3 new real end-to-end `tests/test_divergence_cluster.py::TestPipelineIntegration` tests
+(hard-cap mode carries the trio's columns forward; soft-cap/default mode carries
+`divergence_cluster`'s column forward; skipped `tm_filter`/`blast_filter` carry forward
+in both modes) -- 86 passed (was 83), ruff clean.
+
 ## FlyForge v1.5.1 - 2026-09-02 (new: structured `hard_max_baits_feasible`/`hard_max_baits_achieved_identity` fields in `_summary.tsv`)
 
 Small, real follow-up needed while building PalaeoSCOPE's Phase 2 (Fillet

@@ -63,7 +63,7 @@ from Bio.SeqUtils import MeltingTemp as mt
 from Bio.Blast import NCBIXML
 import primer3 as primer3_mod
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 AMBIGUOUS_BASES = set("NRYWSMKHBVDnrywsmkhbvd")
 AMBIGUOUS_RE = re.compile(r'[^ATGC]')
@@ -2064,6 +2064,11 @@ def run_pipeline(args):
         progress.finish_step("tm_filter",
                              details=f"{removed_tm} removed (Tm < {args.min_tm}); "
                                      f"{len(all_baits)} remain")
+    else:
+        # Carry the current count forward when this step is skipped -- RefStats
+        # fields default to 0, so without this a skipped step's column would read
+        # as "every reference lost all its baits here" instead of "not applicable."
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_tm')
 
     # ===== 9. LguI site filter (if o-pool mode) =====
     if not args.no_opool:
@@ -2099,6 +2104,9 @@ def run_pipeline(args):
         _update_ref_counts(ref_stats, all_baits, 'n_baits_after_blast')
         progress.finish_step("blast_filter",
                              details=f"{removed_blast} removed; {len(all_baits)} remain")
+    else:
+        # Same carry-forward reasoning as n_baits_after_tm above.
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_blast')
 
     # ===== 12. Optional specificity filter (nident-based, from CARPDM) =====
     if args.specificity_db:
@@ -2149,6 +2157,13 @@ def run_pipeline(args):
                      f"{div_result['achieved_identity'] if div_result['achieved_identity'] else 'n/a (already under cap)'}"
                      f"; {len(all_baits):,} remain"
                      f"{' [INFEASIBLE, best effort]' if not div_result['feasible'] else ''}"))
+        # divergence_cluster replaces the whole prereduce/self-BLAST/cluster trio below,
+        # so none of those three ever run here -- carry the real post-cap count forward
+        # into their columns too, instead of leaving them at RefStats' default 0 (which
+        # would misleadingly read as "every reference lost all its baits at this step").
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_redundancy')
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_cluster')
     else:
         # ===== 12c. Optional cd-hit-est pre-reduction before self-BLAST redundancy filter =====
         # See --redundancy-prereduce-identity's own help text for the real finding
@@ -2170,6 +2185,8 @@ def run_pipeline(args):
             _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
             progress.finish_step("redundancy_prereduce",
                                  details=f"{removed_prereduce} removed; {len(all_baits)} remain")
+        else:
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_prereduce')
 
         # ===== 13. Self-BLAST redundancy filter =====
         if not args.no_redundancy:
@@ -2185,6 +2202,8 @@ def run_pipeline(args):
             progress.finish_step("self_blast_redundancy",
                                  details=f"{n_comp_rm + n_red_rm} removed; "
                                          f"{len(all_baits)} remain")
+        else:
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_redundancy')
 
         # ===== 14. cd-hit-est clustering =====
         if not args.no_cluster:
@@ -2198,6 +2217,13 @@ def run_pipeline(args):
             _update_ref_counts(ref_stats, all_baits, 'n_baits_after_cluster')
             progress.finish_step("clustering",
                                  details=f"{removed_cluster} removed; {len(all_baits)} remain")
+        else:
+            _update_ref_counts(ref_stats, all_baits, 'n_baits_after_cluster')
+
+        # divergence_cluster is the hard-cap branch's own mechanism and never runs
+        # here -- carry the trio's real final count into its column too, for the
+        # same reason as the carry-forward on the hard-cap side above.
+        _update_ref_counts(ref_stats, all_baits, 'n_baits_after_divergence_cluster')
 
     # Update final counts
     _update_ref_counts(ref_stats, all_baits, 'n_baits_final')
