@@ -232,14 +232,24 @@ def annotate(
 
         # --- basic QC filters ---
         if cfg.get("steps", {}).get("basic_qc", True):
-            if a.length < int(bqc.get("min_length", 0)):
+            # Per-class minimum length overrides global min_length for specific classes:
+            # if *klass* has an explicit entry in min_length_by_class, that floor is the
+            # ONLY one applied (whether it is lower or higher than the global default) --
+            # the global min_length check is skipped entirely for that class. Previously
+            # the global check ran unconditionally regardless of any per-class entry, so
+            # a class-specific floor set LOWER than min_length (e.g. to admit genuinely
+            # short barcode loci like mature tRNAs while keeping a higher global floor
+            # for everything else) could never actually rescue anything: length_below_min
+            # still fired and still forced a hard REJECT (it is in hard_reject_reasons),
+            # silently defeating the documented "overrides global min_length" behavior.
+            min_length_by_class = bqc.get("min_length_by_class", {})
+            if klass in min_length_by_class:
+                if a.length < int(min_length_by_class[klass]):
+                    a.add_reason("length_below_class_min")
+            elif a.length < int(bqc.get("min_length", 0)):
                 a.add_reason("length_below_min")
             if a.length > int(bqc.get("max_length", 10**12)):
                 a.add_reason("length_above_max")
-            # Per-class minimum length (overrides global min_length for specific classes).
-            class_min = int(bqc.get("min_length_by_class", {}).get(klass, 0))
-            if class_min and a.length < class_min:
-                a.add_reason("length_below_class_min")
             if a.n_fraction > float(bqc.get("max_n_fraction", 1.0)):
                 a.add_reason("n_fraction_high")
             if a.non_iupac_fraction > float(bqc.get("max_non_iupac_fraction", 1.0)):

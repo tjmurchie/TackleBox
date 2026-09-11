@@ -1,5 +1,24 @@
 # Spinner Changelog
 
+## 1.4.1 — 2026-09-11 (fix: `min_length_by_class` never actually overrode the global `min_length` floor)
+
+Real bug found while investigating why a PLANT barcode-locus panel's per-class length floors
+seemed to have no effect: `annotate()`'s basic-QC step ran the global `min_length` check
+unconditionally, then separately ALSO checked `min_length_by_class` as an extra, additive
+constraint on top -- so a per-class floor set LOWER than the global default (e.g. to admit
+genuinely short barcode loci like mature tRNA genes while keeping a stricter global floor for
+everything else) could never actually rescue anything; the global check still fired and still
+forced a hard REJECT, silently defeating the documented "overrides global `min_length`"
+behavior. Fixed so a class with an explicit `min_length_by_class` entry uses ONLY that floor,
+skipping the global check entirely for that class.
+
+Real-data impact surfaced by this bug: 6 mature-tRNA loci (TRNH, TRNK, TRNT, TRNG_EXON, TRND,
+TRNC) were 81-99.9% wiped out by the flat 80bp floor despite each having a real,
+literature-derived `expected_min_bp` of 60-95bp in `barcode_loci_config.tsv` -- these 6 loci
+alone accounted for 99.58% of every `length_below_min` rejection in a real PLANT run
+(21,010/21,099). New regression test in `tests/test_qc.py`, grounded in real TRNH data
+(confirmed fails pre-fix, passes post-fix). Full suite green (213 passed).
+
 ## 1.4.0 — 2026-09-01 (new, opt-in: species_guess canonicalization via NCBI taxdump synonyms)
 
 Real bug found via forensic analysis of a real ~10,000-species PalaeoSCOPE Phase B

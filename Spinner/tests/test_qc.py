@@ -203,6 +203,39 @@ def test_length_above_class_min_no_flag(tmp_path):
     assert "length_below_class_min" not in ann["A.1"].reasons
 
 
+def test_min_length_by_class_override_rescues_record_between_class_and_global_floor(tmp_path):
+    """A per-class floor LOWER than the global min_length must actually take effect.
+
+    Grounded in real PLANT bait-panel data (2026-09-08 panel_restructure_test run,
+    curated_refs_regionfix.decisions.tsv): with the flat basic_qc.min_length: 80
+    floor, real TRNH (mature chloroplast tRNA-His) candidates are rejected via
+    length_below_min at 3184/3186 (99.9%), with observed real lengths clustering
+    at 71-79bp (median 75bp) -- genuinely short mature tRNAs per the real barcode
+    literature, not junk fragments. A record of length 75 (the real median) with
+    a class-specific override of min_length_by_class: {"TRNH": 60} must be rescued
+    (no length_below_min AND no length_below_class_min), since 75 >= 60. Before the
+    fix, the global min_length check ran unconditionally regardless of the
+    per-class override, so this record was still hard-rejected via length_below_min
+    even though the override was set up specifically to admit it.
+    """
+    regions_tsv = tmp_path / "regions_config.tsv"
+    regions_tsv.write_text(
+        "region_id\tclass\tenabled_default\tregex\n"
+        "TRNH\tTRNH\t1\t\\|TRNH\\|\n",
+        encoding="utf-8",
+    )
+    # 75bp, matching the real observed TRNH median length from the run cited above.
+    seq = "ACGT" * 18 + "AGC"
+    assert len(seq) == 75
+    recs = parse_inline(f">AJ271079.4|TRNH|pos1..75 test trnH-GUG\n{seq}\n", tmp_path)
+    cfg = make_cfg(min_length=80, min_length_by_class={"TRNH": 60})
+    ann = annotate(recs, cfg, regions_config=str(regions_tsv))
+    key = "AJ271079.4|TRNH|pos1..75"
+    assert ann[key].marker_class == "TRNH"
+    assert "length_below_min" not in ann[key].reasons
+    assert "length_below_class_min" not in ann[key].reasons
+
+
 # ---------------------------------------------------------------------------
 # Score bonus reasons: refseq_preferred, voucher_keyword, complete_organelle
 # ---------------------------------------------------------------------------
