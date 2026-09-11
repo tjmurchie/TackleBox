@@ -28,23 +28,42 @@
 #
 # Options:
 #   --max-per-taxon N      Max NCBI records to fetch per taxon (default: 1000)
-#   --min-slen N           Min sequence length filter in bp (default: 50)
+#   --min-slen N           Min sequence length filter in bp (default: 80 -- matches
+#                          Spinner's own bait_panel-profile basic_qc.min_length floor,
+#                          see PalaeoSCOPE's flyguide adapter for callers that derive this
+#                          automatically from a project's resolved Spinner profile;
+#                          direct/standalone callers get this as a safety-net floor)
 #   --max-slen N           Max sequence length filter in bp (default: 400000)
-#   --no-organelle         Skip organelle records; fetch nuclear markers only
+#   --no-organelle         Skip organelle records; fetch nuclear markers only.
+#                          Equivalent to --disable-regions MITO,PLASTID, so an
+#                          explicit --enable-regions MITO (or PLASTID) still
+#                          forces that organelle's terms back into the query.
 #   --enable-regions LIST  Comma-separated region_id(s) to force-enable
-#                          (overrides enabled_default=0 in regions_config.tsv)
+#                          (overrides enabled_default=0 in regions_config.tsv,
+#                          and overrides --no-organelle for MITO/PLASTID)
 #   --disable-regions LIST Comma-separated region_id(s) to force-disable
+#                          (MITO/PLASTID are valid ids here too, and control
+#                          the mitochondrion/mitochondrial vs
+#                          chloroplast/plastid halves of the organelle term
+#                          independently)
 #   --no-tui               Disable the interactive TUI; use plain line output
 #   --name-mode MODE        Taxon normalization mode for [ORGN] query:
 #                             species   = legacy first two tokens (default)
 #                             trinomial = first three tokens if present
 #                             as-is     = full input line after whitespace cleanup
+#   --dry-run              Print "species<TAB>ESearch term" for each taxon to
+#                          STDOUT instead of querying/downloading; useful for
+#                          verifying --enable-regions/--disable-regions effects.
 #
 # Query customization via regions_config.tsv:
 #   Each row in regions_config.tsv contributes an NCBI [Title] search clause.
 #   Rows with enabled_default=0 are skipped unless --enable-regions is used.
+#   The MITO and PLASTID rows are special: instead of contributing a [Title]
+#   clause, their enabled state gates the mitochondrion/mitochondrial and
+#   chloroplast/plastid terms respectively in the organelle block.
 #   Example: --enable-regions COI        (adds COI/cox1 to every query)
 #            --disable-regions NUC_H3    (removes histone H3 from queries)
+#            --disable-regions PLASTID   (removes chloroplast/plastid terms)
 #            --min-slen 100 --max-slen 5000  (tighter length filter)
 #            --no-organelle              (nuclear markers only)
 
@@ -90,16 +109,30 @@ $SIG{INT} = sub {
 my $REGIONS_CONFIG   = "$FindBin::Bin/regions_config.tsv";
 my @MARKER_CLAUSES;
 my $USE_CONFIG_MARKERS = 0;
+my %REGION_ENABLED;   # region_id => 1/0, effective enabled state (config default,
+                       # overridden by --enable-regions/--disable-regions), for
+                       # EVERY region_id in regions_config.tsv (even rows with no
+                       # ncbi_title_clause, e.g. MITO/PLASTID which drive $ORGANELLE_BLOCK).
 
 # ── CLI options ───────────────────────────────────────────────────────────
 my $max_per_taxon     = 1000;
-my $min_slen          = 50;
+# Real gap, confirmed 2026-09-11 (PalaeoSCOPE's FlyGuide cap-survey / min-slen-waste-and-
+# rescue-interaction workflow): this used to default to 50, independently of and lower
+# than Spinner's own basic_qc.min_length floor for the bait_panel profile actually used by
+# real PalaeoSCOPE projects (80) -- and Spinner has no rescue path that can ever save a
+# record hard-rejected for length_below_min, so any such gap is pure wasted download/
+# storage/curation effort with zero effect on the final KEEP/rescue outcome. Raised to 80
+# as a safety-net floor for any caller that doesn't go through PalaeoSCOPE's own adapter
+# (which derives --min-slen explicitly from the project's resolved Spinner profile and
+# passes it through, overriding this default whenever that resolution succeeds).
+my $min_slen          = 80;
 my $max_slen          = 400000;
 my $no_organelle      = 0;
 my $no_tui            = 0;
 my $enable_regions_s  = '';
 my $disable_regions_s = '';
 my $name_mode         = 'species';
+my $dry_run           = 0;
 
 GetOptions(
     "max-per-taxon=i"    => \$max_per_taxon,
@@ -110,6 +143,7 @@ GetOptions(
     "disable-regions=s"  => \$disable_regions_s,
     "no-tui"             => \$no_tui,
     "name-mode=s"        => \$name_mode,
+    "dry-run"            => \$dry_run,
 ) or die "Usage: $0 [options] species.txt OUTPREFIX you\@email [NCBI_API_KEY]\n";
 
 $name_mode = lc($name_mode // 'species');
@@ -120,6 +154,17 @@ $IS_TTY = 0 if $no_tui;
 
 my %force_enable  = map { $_ => 1 } grep { /\S/ } split /,/, $enable_regions_s;
 my %force_disable = map { $_ => 1 } grep { /\S/ } split /,/, $disable_regions_s;
+
+# --no-organelle is sugar for "force-disable the organelle regions", but an
+# explicit --enable-regions for one of them still wins (CLI overrides always
+# take priority over each other in force_enable-first order, same as any
+# other region_id) -- this is what lets --enable-regions MITO force
+# mitochondrial terms back in even when --no-organelle is also given.
+if ($no_organelle) {
+    for my $organelle_id (qw(MITO PLASTID)) {
+        $force_disable{$organelle_id} = 1 unless exists $force_enable{$organelle_id};
+    }
+}
 
 # ── Positional args ───────────────────────────────────────────────────────
 my $species_file = shift @ARGV
@@ -135,6 +180,20 @@ my $MAX_RETRIES         = 3;
 
 # ── Load marker clauses from regions_config.tsv ───────────────────────────
 load_marker_clauses_from_regions($REGIONS_CONFIG);
+
+# ── Organelle block: respects --enable-regions/--disable-regions for the
+#    MITO / PLASTID region_ids, falling back to "enabled" (today's hardcoded
+#    behavior) when regions_config.tsv doesn't define that id at all. ───────
+my $mito_enabled    = region_enabled('MITO',    1);
+my $plastid_enabled = region_enabled('PLASTID', 1);
+
+my @organelle_terms;
+push @organelle_terms, "mitochondrion", "mitochondrial" if $mito_enabled;
+push @organelle_terms, "chloroplast",   "plastid"       if $plastid_enabled;
+
+my $ORGANELLE_BLOCK = @organelle_terms
+    ? "(" . join(" OR ", @organelle_terms) . ")"
+    : '';
 
 my $DEFAULT_MARKER_BLOCK = join(" OR ", (
     "\"18S ribosomal RNA\"[Title]",
@@ -211,22 +270,27 @@ for my $raw_species (@species_raw) {
     my $norm_species = normalize_species_name($raw_species);
     my $org_term     = "${norm_species}[ORGN]";
 
-    my $organelle_block = "(mitochondrion OR mitochondrial OR chloroplast OR plastid)";
-
     my $term;
     my $slen_filter = "${min_slen}:${max_slen}[SLEN]";
     my $not_block   = "NOT wgs[PROP] NOT tsa[PROP] NOT clone[Title] NOT UNVERIFIED[Title] NOT chromosome[Title] NOT PREDICTED[Title]";
 
-    if ($no_organelle) {
-        my $marker_block = $USE_CONFIG_MARKERS && @MARKER_CLAUSES
-            ? "(" . join(" OR ", @MARKER_CLAUSES) . ")"
-            : "(" . $DEFAULT_MARKER_BLOCK . ")";
-        $term = "($org_term) AND $slen_filter AND $marker_block $not_block";
-    } elsif ($USE_CONFIG_MARKERS && @MARKER_CLAUSES) {
-        my $marker_block = "(" . join(" OR ", @MARKER_CLAUSES) . ")";
-        $term = "($org_term) AND $slen_filter AND ($organelle_block OR $marker_block) $not_block";
-    } else {
-        $term = "($org_term) AND $slen_filter AND ($organelle_block OR ($DEFAULT_MARKER_BLOCK)) $not_block";
+    # NOTE: $ORGANELLE_BLOCK is already '' when organelle terms are excluded
+    # (whether via plain --no-organelle, or via --disable-regions on
+    # MITO/PLASTID), and already contains a fully-formed OR-list otherwise
+    # (see $ORGANELLE_BLOCK construction above, which also lets
+    # --enable-regions MITO/PLASTID force terms back in even under
+    # --no-organelle) -- so no separate $no_organelle branch is needed here.
+    my $marker_block = $USE_CONFIG_MARKERS && @MARKER_CLAUSES
+        ? "(" . join(" OR ", @MARKER_CLAUSES) . ")"
+        : "(" . $DEFAULT_MARKER_BLOCK . ")";
+    my $combined = $ORGANELLE_BLOCK ne ''
+        ? "($ORGANELLE_BLOCK OR $marker_block)"
+        : $marker_block;
+    $term = "($org_term) AND $slen_filter AND $combined $not_block";
+
+    if ($dry_run) {
+        print STDOUT "$raw_species\t$term\n";
+        next;
     }
 
     # Update TUI: taxon now searching
@@ -460,9 +524,15 @@ sub build_query_template {
     } else {
         $markers = "18S/28S/ITS/5.8S/H3 (built-in)";
     }
-    my $content = $no_organelle
-        ? $markers
-        : "mito/plastid OR $markers";
+    my $organelle_label = '';
+    if ($ORGANELLE_BLOCK ne '') {
+        $organelle_label = ($mito_enabled && $plastid_enabled) ? 'mito/plastid'
+                          : $mito_enabled                       ? 'mito'
+                          :                                       'plastid';
+    }
+    my $content = ($organelle_label ne '')
+        ? "$organelle_label OR $markers"
+        : $markers;
     return "(SPECIES[ORGN]) AND $slen AND ($content) NOT wgs NOT tsa NOT clone NOT UNVERIFIED NOT chromosome NOT PREDICTED";
 }
 
@@ -498,15 +568,23 @@ sub load_marker_clauses_from_regions {
         $enabled      //= 1;
         $title_clause //= '';
 
-        # CLI overrides take priority
+        # CLI overrides take priority. Recorded into %REGION_ENABLED for every
+        # region_id (even rows like MITO/PLASTID whose ncbi_title_clause is
+        # empty because they don't feed the marker-clause OR-list directly --
+        # they instead gate $ORGANELLE_BLOCK, computed by the caller via
+        # region_enabled()) so --enable-regions/--disable-regions has a real,
+        # observable effect on those rows too.
+        my $is_enabled;
         if (exists $force_enable{$id}) {
-            # include regardless of enabled_default
+            $is_enabled = 1;
         } elsif (exists $force_disable{$id}) {
-            next;
+            $is_enabled = 0;
         } else {
-            next if $enabled eq '0';
+            $is_enabled = ($enabled eq '0') ? 0 : 1;
         }
+        $REGION_ENABLED{$id} = $is_enabled if $id ne '';
 
+        next unless $is_enabled;
         next unless $title_clause =~ /\S/;
         $title_clause =~ s/^\s+|\s+$//g;
         push @clauses, "($title_clause)";
@@ -519,6 +597,15 @@ sub load_marker_clauses_from_regions {
     } else {
         $USE_CONFIG_MARKERS = 0;
     }
+}
+
+# region_enabled($id, $default): effective enabled state for a regions_config.tsv
+# region_id, honoring --enable-regions/--disable-regions overrides. Falls back
+# to $default when regions_config.tsv is missing or doesn't define that id, so
+# behavior is unchanged for installs without an explicit MITO/PLASTID row.
+sub region_enabled {
+    my ($id, $default) = @_;
+    return exists $REGION_ENABLED{$id} ? $REGION_ENABLED{$id} : $default;
 }
 
 sub normalize_species_name {
@@ -558,6 +645,7 @@ sub esearch_ids {
             -email   => $email,
             -api_key => $api_key,
             -retmax  => $retmax,
+            -sort    => 'SLEN',
         );
         eval {
             $count = $eutil->get_count;

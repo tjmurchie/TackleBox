@@ -1,5 +1,42 @@
 # FlyGuide Changelog
 
+## 1.3.2 — 2026-09-11 (NCBI-NT_Downloader.pl: fix `--enable-regions`/`--disable-regions` organelle no-op, raise `--min-slen` default, sort ESearch by length)
+
+Three real bugs/gaps found via a cap-survey investigation into whether the `--max-per-taxon`
+download cap could silently exclude better reference sequences:
+
+1. **`--enable-regions MITO/PLASTID` and `--disable-regions MITO/PLASTID` were silently
+   complete no-ops**, despite being documented as working: the organelle-terms block was
+   built from a hardcoded literal (`"(mitochondrion OR mitochondrial OR chloroplast OR
+   plastid)"`), and `load_marker_clauses_from_regions()` never consulted `%force_enable`/
+   `%force_disable` for region rows with no `ncbi_title_clause` (MITO/PLASTID have none --
+   they gate the organelle block, not a marker clause). Fixed: new `%REGION_ENABLED` +
+   `region_enabled()` make the organelle block genuinely respect CLI overrides, including
+   `--enable-regions MITO` correctly forcing mitochondrial terms back in even under
+   `--no-organelle`. New `--dry-run` flag added (prints `species<TAB>ESearch term` without
+   querying) to make this class of query-construction bug directly verifiable going forward.
+   6 new regression tests exercising the real script via subprocess; also live-verified
+   against real NCBI with `--disable-regions PLASTID`.
+2. **`--min-slen` default (50) sat independently of, and below, Spinner's real
+   `basic_qc.min_length` floor (80) for the `bait_panel` profile real PalaeoSCOPE projects
+   actually use** -- and Spinner has no rescue path that can ever save a record hard-rejected
+   for length below that floor, so the gap was pure wasted download/storage/curation effort
+   with zero effect on final KEEP/rescue outcomes. Raised the built-in default to 80 as a
+   safety net for any caller not going through PalaeoSCOPE's own adapter (which now derives
+   `--min-slen` explicitly from the project's resolved Spinner profile -- see PalaeoSCOPE's
+   own changelog).
+3. **Added `-sort => 'SLEN'` to `esearch_ids()`'s ESearch call.** Confirmed via real,
+   concrete cases that `--max-per-taxon`'s cap, combined with NCBI's unsorted default result
+   order, can silently exclude better/longer reference sequences: several genus-level
+   candidate-list entries in a real Carabidae panel had far more real NCBI matches than the
+   default 1000-record cap ("Carabus" 10194, "Bembidion" 4572, "Pterostichus" 2858, "Amara"
+   1094), meaning 80-90%+ of real matching records for these entries were never fetched at
+   all, in arbitrary order -- one confirmed concrete loss: a complete Bembidion mitogenome +
+   RefSeq pair never fetched. Sorting by sequence length before the cap is applied means the
+   records most likely to be complete/high-quality are kept preferentially. Live-verified
+   twice against NCBI's real endpoint (once during investigation, once independently during
+   verification).
+
 ## 1.3.1 — 2026-08-31 (guidecheck.sh: fix hard crash + silent column corruption)
 
 Two real bugs found via a live ~10,000-species PalaeoSCOPE Phase B run, both in
