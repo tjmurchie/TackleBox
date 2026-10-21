@@ -40,6 +40,33 @@ blank_relative_min (0.10)
     flagged.  Together with blank_absolute_min this allows a proportional
     assessment.
 
+blank_depth_normalize (True)
+    If True (default), ALSO flag Blank-associated -- UNCONDITIONALLY,
+    overriding strong_count_support and even genuine exact-damage support,
+    same priority tier as an exact blank-damage match -- when the taxon's
+    reads-per-million-classified-reads (RPM, normalized by each library's
+    own total MEGAN-classified read count) is not at least
+    blank_depth_fold_threshold times higher in the best real library than
+    in the best blank library. This is intentionally a stronger/higher-
+    priority check than blank_absolute_min/blank_relative_min (which stay
+    at their old, conditional priority, gated by strong_count_support etc.)
+    -- raw-count comparison alone can completely miss a real contamination
+    signal when blank libraries were sequenced much more shallowly than
+    real libraries (common in practice): a taxon can have a small raw blank
+    count that is nonetheless proportionally far more concentrated in the
+    blank than in any real sample. Only clearing the fold threshold itself
+    lets a taxon be judged on its own merits (count/damage evidence) rather
+    than being unconditionally forced to Blank-associated. Set to False to
+    disable this check entirely (old raw-count-only behavior).
+
+blank_depth_fold_threshold (10.0)
+    The fold-difference a real library's depth-normalized rate (RPM) must
+    exceed the best blank library's RPM by, to be exempted from the
+    depth-normalized blank-concern flag above. "At least 10x more
+    concentrated, per sequencing effort, in a real library than in any
+    blank" before a taxon is considered to have cleared background/
+    contamination-level noise.
+
 qc_alignments_per_read_clean_max (10.0)
     N_alignments / N_reads below this ratio is considered "clean" from a
     multimapping perspective.
@@ -137,6 +164,8 @@ DEFAULT_CONFIG = {
         "strong_count_min_libraries":       2,
         "blank_absolute_min":               10,
         "blank_relative_min":               0.10,
+        "blank_depth_normalize":            True,
+        "blank_depth_fold_threshold":       10.0,
         "qc_alignments_per_read_clean_max": 10.0,
         "qc_alignments_per_read_caution_max": 20.0,
         "qc_abs_rho_clean_max":             0.30,

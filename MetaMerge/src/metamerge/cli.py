@@ -471,12 +471,25 @@ def build_parser() -> argparse.ArgumentParser:
     thr.add_argument("--strong-count-min-libraries", type=int, metavar="INT", help=_threshold_help("strong_count_min_libraries", _threshold_default("strong_count_min_libraries"), "Minimum number of positive non-control libraries for strong count support.", "set to 1 when only one library per sample exists; raise for stricter reproducibility."))
     thr.add_argument("--blank-absolute-min", type=int, metavar="INT", help=_threshold_help("blank_absolute_min", _threshold_default("blank_absolute_min"), "Absolute blank/control count at which contamination concern starts to matter.", "raise if blanks are noisy but expected; lower for ultra-clean workflows."))
     thr.add_argument("--blank-relative-min", type=float, metavar="FLOAT", help=_threshold_help("blank_relative_min", _threshold_default("blank_relative_min"), "Blank-to-sample count ratio threshold used in Blank-associated calls.", "lower for stricter contamination control; raise if true taxa also appear weakly in controls."))
+    thr.add_argument("--blank-depth-fold-threshold", type=float, metavar="FLOAT", help=_threshold_help("blank_depth_fold_threshold", _threshold_default("blank_depth_fold_threshold"), "Fold-difference a real library's depth-normalized rate (reads-per-million of that library's own total classified reads) must exceed the best blank's rate by, to avoid the depth-normalized Blank-associated flag.", "lower for stricter contamination control; raise if true taxa also appear weakly in shallowly-sequenced controls."))
     thr.add_argument("--tentative-min-reads", type=int, metavar="INT", help=_threshold_help("tentative_min_reads", _threshold_default("tentative_min_reads"), "Minimum reads for a taxon to move above Weak support when stronger evidence is missing."))
     thr.add_argument("--weak-support-min-reads", type=int, metavar="INT", help=_threshold_help("weak_support_min_reads", _threshold_default("weak_support_min_reads"), "Minimum reads required to retain a taxon as Weak support rather than dropping it entirely."))
     thr.add_argument("--qc-alignments-per-read-clean-max", type=float, metavar="FLOAT", help=_threshold_help("qc_alignments_per_read_clean_max", _threshold_default("qc_alignments_per_read_clean_max"), "Maximum alignments-per-read ratio still considered clean mapping behavior.", "lower if multimapping is a major concern."))
     thr.add_argument("--qc-alignments-per-read-caution-max", type=float, metavar="FLOAT", help=_threshold_help("qc_alignments_per_read_caution_max", _threshold_default("qc_alignments_per_read_caution_max"), "Above this alignments-per-read ratio, support is flagged as strong caution."))
     thr.add_argument("--qc-abs-rho-clean-max", type=float, metavar="FLOAT", help=_threshold_help("qc_abs_rho_clean_max", _threshold_default("qc_abs_rho_clean_max"), "Maximum absolute rho_Ac still treated as clean fit quality."))
     thr.add_argument("--qc-abs-rho-caution-max", type=float, metavar="FLOAT", help=_threshold_help("qc_abs_rho_caution_max", _threshold_default("qc_abs_rho_caution_max"), "Above this absolute rho_Ac value, fit quality is flagged as strong caution."))
+
+    common.add_argument(
+        "--disable-blank-depth-normalize", action="store_true",
+        help=(
+            "Disable the depth-normalized Blank-associated check (reads-per-million of each "
+            "library's own total classified-read count). This check is IN ADDITION to the "
+            "raw-count blank_absolute_min/blank_relative_min checks, not a replacement -- it "
+            "catches taxa that are proportionally far more concentrated in a shallowly-sequenced "
+            "blank than in any real (more deeply-sequenced) library, which raw-count comparison "
+            "alone can miss entirely. Default: enabled."
+        ),
+    )
 
     common.add_argument("--common-names-file", help="Optional CSV/TSV/XLSX with custom common-name overrides. Columns: scientific_name, tax_id, common_name (tax_id match takes priority).")
     common.add_argument(
@@ -659,6 +672,7 @@ def _apply_threshold_overrides(args, config: dict) -> None:
         "strong_count_min_libraries":         getattr(args, "strong_count_min_libraries", None),
         "blank_absolute_min":                 getattr(args, "blank_absolute_min", None),
         "blank_relative_min":                 getattr(args, "blank_relative_min", None),
+        "blank_depth_fold_threshold":         getattr(args, "blank_depth_fold_threshold", None),
         "tentative_min_reads":                getattr(args, "tentative_min_reads", None),
         "weak_support_min_reads":             getattr(args, "weak_support_min_reads", None),
         "qc_alignments_per_read_clean_max":   getattr(args, "qc_alignments_per_read_clean_max", None),
@@ -669,6 +683,9 @@ def _apply_threshold_overrides(args, config: dict) -> None:
     for key, val in override_map.items():
         if val is not None:
             config["thresholds"][key] = val
+
+    if getattr(args, "disable_blank_depth_normalize", False):
+        config["thresholds"]["blank_depth_normalize"] = False
 
 
 def command_check(args) -> None:

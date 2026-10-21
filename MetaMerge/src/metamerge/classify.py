@@ -219,6 +219,15 @@ def build_merge(
     real_cols          = real_meta["megan_library_name"].tolist()
     blank_cols         = blank_meta["megan_library_name"].tolist()
 
+    # Per-library "depth" = total MEGAN-classified reads across ALL taxa for that
+    # library (a column sum of the already-loaded count matrix -- project-neutral,
+    # no extra input required). Used below to depth-normalize the blank-vs-real
+    # comparison: a shallowly-sequenced blank library can show a small RAW count
+    # for a taxon that is nonetheless proportionally MORE concentrated than in a
+    # deeply-sequenced real library, and raw-count comparison alone misses this
+    # entirely. See blank_depth_normalize / blank_depth_fold_threshold below.
+    lib_depth = megan_df.reindex(columns=megan_library_cols, fill_value=0.0).sum(axis=0).to_dict()
+
     # Pre-build lineage indexes once; reused for every MEGAN taxon.
     _, supported_name_index_by_sample, descendant_index_by_sample = build_lineage_indexes(
         holi_df, thresholds
@@ -334,10 +343,41 @@ def build_merge(
             qc_label    = "not-applicable"
             align_ratio = np.nan
 
+        # Depth-normalized blank comparison (reads-per-million of each library's
+        # OWN total classified-read count), in ADDITION to the raw-count checks
+        # below -- not a replacement. Motivating case (A51 project): blanks are
+        # typically sequenced far more shallowly than real samples, so a taxon
+        # can be proportionally MUCH more concentrated in a blank than in any
+        # real sample while still having a small raw count that passes both
+        # raw-count checks undetected (e.g. Cutibacterium acnes: blank RPM in
+        # the thousands vs. a real-sample median RPM of ~3 -- invisible to a
+        # pure raw-count/ratio test, since the blank's absolute count was small).
+        real_rpm  = max((real_counts[lib]  / lib_depth[lib] * 1e6
+                          for lib in real_cols  if lib_depth.get(lib, 0) > 0), default=0.0)
+        blank_rpm = max((blank_counts[lib] / lib_depth[lib] * 1e6
+                          for lib in blank_cols if lib_depth.get(lib, 0) > 0), default=0.0)
+        blank_caution_depth_normalized = (
+            blank_rpm > 0
+            and real_rpm < thresholds["blank_depth_fold_threshold"] * blank_rpm
+        )
+
         blank_damage_support = len(exact_damage_supported_blank) > 0
-        blank_caution = (
+        # Raw-count blank concern -- kept separate from the depth-normalized
+        # check below (not merged into one `blank_caution`): this one stays
+        # at its pre-existing, CONDITIONAL priority (gated by strong_count_
+        # support and the damage/qc clause just below), while the depth-
+        # normalized check is promoted to an UNCONDITIONAL override (PI
+        # decision, 2026-10-21: "the blanks should be checked as an escape
+        # hatch regardless of other factors" -- a depth-normalized blank
+        # comparison takes priority over strong_count_support and even over
+        # genuine exact-damage support; only clearing the fold threshold
+        # itself lets a taxon be judged on its own merits).
+        blank_caution_raw_count = (
             max_blank_count >= thresholds["blank_absolute_min"]
             or (max_real_count > 0 and max_blank_count / max_real_count >= thresholds["blank_relative_min"])
+        )
+        blank_caution_depth_applies = (
+            thresholds.get("blank_depth_normalize", True) and blank_caution_depth_normalized
         )
         # An exact-damage-support call built on a "strong caution" multimapping
         # fit (alignments/read far beyond the QC threshold) is not trustworthy
@@ -345,8 +385,8 @@ def build_merge(
         # its own -- see A51-LBL-1 Homo sapiens (40.7 alignments/read, blank
         # count 12.8x the real-sample count), which was misclassified
         # "Supported" instead of "Blank-associated" for exactly this reason.
-        blank_associated = blank_damage_support or (
-            blank_caution and not strong_count_support and (
+        blank_associated = blank_damage_support or blank_caution_depth_applies or (
+            blank_caution_raw_count and not strong_count_support and (
                 not exact_damage_support or qc_label == "strong caution"
             )
         )
@@ -430,6 +470,9 @@ def build_merge(
             "megan_blank_positive_libraries":    "; ".join(blank_positive_libs),
             "megan_blank_max_count":             max_blank_count,
             "blank_ratio":                       blank_ratio,
+            "real_rpm":                          real_rpm,
+            "blank_rpm":                         blank_rpm,
+            "blank_caution_depth_normalized":    blank_caution_depth_normalized,
             "strong_count_support":              strong_count_support,
             "some_count_support":                some_count_support,
             "Holi_exact_damage_sig_libraries_n":    len(exact_damage_supported_real),
