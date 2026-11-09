@@ -99,6 +99,26 @@ weak_support_min_reads (1)
 """
 
 DEFAULT_CONFIG = {
+    "controls": {
+        # Set to False to disable the environmental-control category entirely
+        # (samples whose sample_type contains "environmental", "spiderweb",
+        # "env_control"/"env_ctrl", "web", "wash", "swab", or "surface", or
+        # whose explicit is_environmental_control column is truthy).
+        # When disabled, those libraries are treated as ordinary (non-control)
+        # samples: their counts contribute to real-evidence classification
+        # (strong_count_support, megan_positive_libraries, etc.) instead of
+        # being excluded, and they plot under their normal `group` column
+        # instead of a separate "environmental_controls" / "<site>_webs" group.
+        "enable_environmental_control": True,
+        # Set to True to plot negative controls (blanks) on the same
+        # heatmap/stacked-bar page as the sample group they belong to
+        # (via the linker's `group` column) instead of a separate
+        # "negative_controls" page. Does not affect classification math —
+        # blanks are still excluded from real-evidence support and still
+        # drive Blank-associated calls either way.
+        "keep_negative_controls_with_group": False,
+    },
+
     "io": {
         # Sheet name for Excel MEGAN count matrices; None = first sheet.
         "counts_sheet": None,

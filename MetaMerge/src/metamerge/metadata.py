@@ -174,9 +174,18 @@ def load_metadata(path: str, config: dict) -> pd.DataFrame:
     if "is_environmental_control" not in df.columns:
         df["is_environmental_control"] = False
 
+    enable_env_ctrl = config.get("controls", {}).get("enable_environmental_control", True)
+
     def _is_environmental(row_flag, row_type: str, is_pos: bool) -> bool:
         """Environmental controls (field samples, spiderwebs, water controls, etc.)
-        are neither biological samples nor extraction blanks."""
+        are neither biological samples nor extraction blanks.
+
+        Returns False unconditionally when the environmental-control category is
+        disabled via config (``controls.enable_environmental_control: false``),
+        in which case these libraries are treated as ordinary samples instead.
+        """
+        if not enable_env_ctrl:
+            return False
         if is_pos:
             return False
         row_type_lc = str(row_type).lower()

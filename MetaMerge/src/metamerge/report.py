@@ -122,7 +122,7 @@ def _normalize_plot_sample_id(sample_id: Any, biological_sample_id: Any, holi_li
 
     base = base.replace("_", "-")
     base = re.sub(r'-(?:Alpha|Beta|Gamma)$', '', base, flags=re.IGNORECASE)
-    base = re.sub(r'([A-Za-z0-9])(?:[cp])$', r'\\1', base)
+    base = re.sub(r'([A-Za-z0-9])(?:[cp])$', r'\1', base)
     base = base.replace('-Cob-', '-Cob').replace('-Web-', '-Web')
     base = re.sub(r'\s+', ' ', base).strip('- ')
     if "undetermined" in stype or base.lower().startswith("undetermined"):
@@ -130,8 +130,26 @@ def _normalize_plot_sample_id(sample_id: Any, biological_sample_id: Any, holi_li
     return base or merged or sid or holi_name or 'unknown'
 
 
-def _derive_plot_group(row: pd.Series) -> str:
-    """Choose a plotting subset/group label."""
+def _derive_plot_group(
+    row: pd.Series,
+    enable_environmental_control: bool = True,
+    keep_negative_controls_with_group: bool = False,
+) -> str:
+    """Choose a plotting subset/group label.
+
+    When ``enable_environmental_control`` is False, environmental-control
+    samples (spiderwebs, washes, swabs, etc.) are not split into their own
+    "environmental_controls" / "<site>_webs" group — they fall through to
+    the normal ``group`` column, so they plot alongside their regular
+    biological-sample group (e.g. folded into "A51_sediments").
+
+    When ``keep_negative_controls_with_group`` is True, negative controls
+    (blanks) are NOT split into a separate "negative_controls" group either —
+    they fall through to the normal ``group`` column too, so a blank plots on
+    the same heatmap/stacked-bar page as the real samples it should be
+    compared against (useful for spotting which taxa in a sample are likely
+    just background contamination).
+    """
     site = str(row.get("site") or "").strip()
     sample_type = str(row.get("sample_type") or "").strip().lower()
     group = str(row.get("group") or "").strip()
@@ -140,15 +158,16 @@ def _derive_plot_group(row: pd.Series) -> str:
     pos = str(row.get("is_positive_control", "false")).lower() in {"true", "1", "yes"}
     env = str(row.get("is_environmental_control", "false")).lower() in {"true", "1", "yes"}
 
-    if env:
+    if env and enable_environmental_control:
         return "environmental_controls"
-    if neg or "blank" in sample_type or ("negative" in sample_type and "positive" not in sample_type):
+    is_negative = neg or "blank" in sample_type or ("negative" in sample_type and "positive" not in sample_type)
+    if is_negative and not keep_negative_controls_with_group:
         return "negative_controls"
     if pos or ("positive" in sample_type and "control" in sample_type):
         return "positive_controls"
     if "undetermined" in sample_type or sample_id.lower().startswith("undetermined"):
         return "undetermined"
-    if "web" in sample_type:
+    if enable_environmental_control and "web" in sample_type:
         return f"{site}_webs" if site else "webs"
     if group and group.lower() not in {"nan", "none", "", "blanks", "positive_controls"}:
         return group
@@ -307,7 +326,14 @@ def make_plot_input(df: pd.DataFrame, metadata: pd.DataFrame, broad_group: str, 
     long = long.loc[long["count"] > 0].copy()
     if long.empty:
         return long
-    long["plot_group"] = long.apply(_derive_plot_group, axis=1)
+    enable_env_ctrl = config.get("controls", {}).get("enable_environmental_control", True)
+    keep_neg_with_group = config.get("controls", {}).get("keep_negative_controls_with_group", False)
+    long["plot_group"] = long.apply(
+        lambda r: _derive_plot_group(
+            r, enable_environmental_control=enable_env_ctrl,
+            keep_negative_controls_with_group=keep_neg_with_group,
+        ), axis=1
+    )
 
     # collapse technical libraries / chemistries to plotting units
     fixed_cols = [
@@ -394,7 +420,12 @@ def write_plot_inputs(merged: pd.DataFrame, metadata: pd.DataFrame, outdir: Path
         paths.append(path)
 
     # Pass metadata so zero-detection samples are included in the order file.
-    write_sample_order_table(paths, outdir, metadata=metadata)
+    enable_env_ctrl = config.get("controls", {}).get("enable_environmental_control", True)
+    keep_neg_with_group = config.get("controls", {}).get("keep_negative_controls_with_group", False)
+    write_sample_order_table(
+        paths, outdir, metadata=metadata, enable_environmental_control=enable_env_ctrl,
+        keep_negative_controls_with_group=keep_neg_with_group,
+    )
     return paths
 
 
@@ -402,6 +433,8 @@ def write_sample_order_table(
     plot_input_paths: list[Path],
     outdir: Path,
     metadata: pd.DataFrame | None = None,
+    enable_environmental_control: bool = True,
+    keep_negative_controls_with_group: bool = False,
 ) -> Path | None:
     """Write a wide-format sample order CSV for user customisation.
 
@@ -440,7 +473,10 @@ def write_sample_order_table(
             # _derive_plot_group expects plot_sample_id in the row.
             enriched = mrow.copy()
             enriched["plot_sample_id"] = psid
-            pgrp = _derive_plot_group(enriched)
+            pgrp = _derive_plot_group(
+                enriched, enable_environmental_control=enable_environmental_control,
+                keep_negative_controls_with_group=keep_negative_controls_with_group,
+            )
             rows.append({
                 "plot_group":               pgrp,
                 "plot_sample_id":           psid,

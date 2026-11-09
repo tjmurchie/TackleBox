@@ -480,6 +480,17 @@ def build_parser() -> argparse.ArgumentParser:
     thr.add_argument("--qc-abs-rho-caution-max", type=float, metavar="FLOAT", help=_threshold_help("qc_abs_rho_caution_max", _threshold_default("qc_abs_rho_caution_max"), "Above this absolute rho_Ac value, fit quality is flagged as strong caution."))
 
     common.add_argument(
+        "--disable-environmental-control", action="store_true",
+        help=(
+            "Disable the environmental-control category (spiderwebs, washes, swabs, surface "
+            "samples, or sample_type/is_environmental_control matches). When set, those "
+            "libraries are treated as ordinary samples: their counts contribute to real-evidence "
+            "classification (strong_count_support, megan_positive_libraries, etc.) instead of "
+            "being excluded, and they plot under their normal linker `group` value instead of a "
+            "separate 'environmental_controls' / '<site>_webs' group. Default: category enabled."
+        ),
+    )
+    common.add_argument(
         "--disable-blank-depth-normalize", action="store_true",
         help=(
             "Disable the depth-normalized Blank-associated check (reads-per-million of each "
@@ -490,7 +501,17 @@ def build_parser() -> argparse.ArgumentParser:
             "alone can miss entirely. Default: enabled."
         ),
     )
-
+    common.add_argument(
+        "--negative-controls-with-samples", action="store_true",
+        help=(
+            "Plot negative controls (blanks) on the same heatmap/stacked-bar page as the sample "
+            "group they belong to (via the linker's `group` column), instead of a separate "
+            "'negative_controls' page. Useful for spotting side-by-side which taxa in a sample "
+            "look like background/blank contamination. Does not change classification math — "
+            "blanks are still excluded from real-evidence support and still drive Blank-associated "
+            "calls either way. Default: blanks plot on their own page."
+        ),
+    )
     common.add_argument("--common-names-file", help="Optional CSV/TSV/XLSX with custom common-name overrides. Columns: scientific_name, tax_id, common_name (tax_id match takes priority).")
     common.add_argument(
         "--online-common-names", action="store_true",
@@ -684,8 +705,14 @@ def _apply_threshold_overrides(args, config: dict) -> None:
         if val is not None:
             config["thresholds"][key] = val
 
+    if getattr(args, "disable_environmental_control", False):
+        config["controls"]["enable_environmental_control"] = False
+
     if getattr(args, "disable_blank_depth_normalize", False):
         config["thresholds"]["blank_depth_normalize"] = False
+
+    if getattr(args, "negative_controls_with_samples", False):
+        config["controls"]["keep_negative_controls_with_group"] = True
 
 
 def command_check(args) -> None:
@@ -730,7 +757,11 @@ def command_check(args) -> None:
         metadata["holi_library_name"].str.startswith("REVIEW_NEEDED", na=False)
         | metadata["holi_library_name"].str.startswith("NO_HOLI_DATA", na=False)
     ]
-    unknown_rows = metadata[metadata.get("sample_id", pd.Series(dtype=str)).eq("UNKNOWN")]
+    # The fallback must share metadata's own index (a linker with no sample_id column
+    # is a real, valid, common case) -- an index-less pd.Series(dtype=str) fallback
+    # raises IndexingError on .eq(), since its own empty index can never align with
+    # metadata's real one.
+    unknown_rows = metadata[metadata.get("sample_id", pd.Series(False, index=metadata.index)).eq("UNKNOWN")]
 
     if not review_rows.empty:
         print(

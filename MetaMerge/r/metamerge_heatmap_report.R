@@ -962,7 +962,15 @@ make_stacked_bars <- function(dat, subset_name, out_file, bar_top_n = 20) {
     geom_col(width = 0.88, colour = "grey25", linewidth = 0.15) +
     scale_fill_manual(values = fill_map_full, breaks = legend_entries,
                       limits = legend_entries, labels = legend_label_map,
-                      drop = FALSE, na.value = "#aaaaaa", name = "Taxon") +
+                      drop = FALSE, na.value = "#aaaaaa", name = "Taxon",
+                      # Without an explicit ncol, ggplot's automatic legend-column
+                      # count can occasionally blow up for legends with many
+                      # group headers (observed with taxon-rich broad groups like
+                      # fungi/microbes), consuming almost the entire figure width
+                      # and squeezing the bar panel itself down to a sliver.
+                      # A fixed column count keeps legend width bounded regardless
+                      # of entry count.
+                      guide = guide_legend(ncol = 4)) +
     scale_x_discrete(labels = x_labels, drop = FALSE) +
     scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
     labs(title = paste0(subset_name, " — proportions"),
