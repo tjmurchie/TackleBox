@@ -141,7 +141,7 @@ def _derive_plot_group(
     samples (spiderwebs, washes, swabs, etc.) are not split into their own
     "environmental_controls" / "<site>_webs" group — they fall through to
     the normal ``group`` column, so they plot alongside their regular
-    biological-sample group (e.g. folded into "A51_sediments").
+    biological-sample group (e.g. folded into "Site_sediments").
 
     When ``keep_negative_controls_with_group`` is True, negative controls
     (blanks) are NOT split into a separate "negative_controls" group either —
@@ -438,7 +438,7 @@ def write_sample_order_table(
 ) -> Path | None:
     """Write a wide-format sample order CSV for user customisation.
 
-    Each column is a plot group (e.g. ``A51_sediments``, ``NHB_bones``).
+    Each column is a plot group (e.g. ``Site_sediments``, ``Site_bones``).
     Each row within a column is a ``plot_sample_id`` in the default display
     order.  The user can:
 

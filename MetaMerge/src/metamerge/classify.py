@@ -345,11 +345,11 @@ def build_merge(
 
         # Depth-normalized blank comparison (reads-per-million of each library's
         # OWN total classified-read count), in ADDITION to the raw-count checks
-        # below -- not a replacement. Motivating case (A51 project): blanks are
+        # below -- not a replacement. Motivating case: blanks are
         # typically sequenced far more shallowly than real samples, so a taxon
         # can be proportionally MUCH more concentrated in a blank than in any
         # real sample while still having a small raw count that passes both
-        # raw-count checks undetected (e.g. Cutibacterium acnes: blank RPM in
+        # raw-count checks undetected (e.g. a common skin/reagent bacterium: blank RPM in
         # the thousands vs. a real-sample median RPM of ~3 -- invisible to a
         # pure raw-count/ratio test, since the blank's absolute count was small).
         real_rpm  = max((real_counts[lib]  / lib_depth[lib] * 1e6
@@ -382,7 +382,7 @@ def build_merge(
         # An exact-damage-support call built on a "strong caution" multimapping
         # fit (alignments/read far beyond the QC threshold) is not trustworthy
         # enough to unconditionally override a substantial blank overlap on
-        # its own -- see A51-LBL-1 Homo sapiens (40.7 alignments/read, blank
+        # its own -- e.g. a human-DNA taxon (40.7 alignments/read, blank
         # count 12.8x the real-sample count), which was misclassified
         # "Supported" instead of "Blank-associated" for exactly this reason.
         blank_associated = blank_damage_support or blank_caution_depth_applies or (

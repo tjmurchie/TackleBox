@@ -101,7 +101,7 @@ def test_smoke_blank_associated():
 
 
 def test_smoke_blank_associated_not_overridden_by_strong_caution_multimapping():
-    """Regression test for the A51-LBL-1 Homo sapiens misclassification:
+    """Regression test for a Homo sapiens misclassification:
     an exact-damage-support call built on a "strong caution" (heavily
     multi-mapping) Holi fit must not be allowed to unconditionally override
     a substantial blank overlap. Modeled directly on the real numbers:
@@ -112,7 +112,7 @@ def test_smoke_blank_associated_not_overridden_by_strong_caution_multimapping():
     exercised (not the pre-existing blank_damage_support branch)."""
     cfg, metadata, megan, holi = _make_test_data()
 
-    # Weak, single-library real MEGAN support (mirrors LBL-1: only 1 of 3
+    # Weak, single-library real MEGAN support (mirrors a real case: only 1 of 3
     # libraries positive, 6 reads) and a blank count that dominates it.
     megan["A"]   = 6.0
     megan["B"]   = 0.0
@@ -141,9 +141,9 @@ def test_smoke_blank_associated_depth_normalized():
     NOT flag it -- should still be Blank-associated if it is proportionally
     far more concentrated in a shallowly-sequenced blank than in a deeply-
     sequenced real library (reads-per-million of each library's own total
-    classified-read count). Motivating real case: A51 project blanks were
+    classified-read count). Motivating case: blanks are often
     sequenced far more shallowly than real samples, and several background
-    bacteria (e.g. Cutibacterium acnes) had small raw blank counts that
+    bacteria (e.g. skin or reagent bacteria) can have small raw blank counts that
     looked negligible by raw-count comparison but were orders of magnitude
     more concentrated in the blanks once normalized for sequencing depth."""
     cfg, metadata, megan, holi = _make_test_data()
@@ -163,7 +163,7 @@ def test_smoke_blank_associated_depth_normalized():
     # Filler taxon (a second megan row) inflates each library's TOTAL
     # classified-read depth independently of the focal taxon's own count --
     # library "A" is deeply sequenced (2,000,000 total), "BLK" is shallow
-    # (50 total), mirroring the real A51 blank-vs-sample depth gap.
+    # (50 total), mirroring a typical blank-vs-sample depth gap.
     filler = pd.DataFrame({
         "tax_id": [1], "tax_name": ["Filler"], "tax_rank": ["genus"],
         "tax_id_str": ["1"], "A": [1_999_900.0], "B": [0.0], "BLK": [45.0],
@@ -219,7 +219,7 @@ def test_smoke_blank_depth_normalize_can_be_disabled():
 
 
 def test_smoke_blank_depth_normalized_overrides_strong_count_support():
-    """PI decision (2026-10-21, real A51 case: Cutibacterium acnes): the
+    """Design decision (2026-10-21): the
     depth-normalized blank check is an UNCONDITIONAL override -- same
     priority tier as an exact blank-damage match -- that beats even
     strong_count_support (>=2 real libraries each with >=50 RAW reads,

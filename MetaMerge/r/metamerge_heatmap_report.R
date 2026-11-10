@@ -334,7 +334,7 @@ lib_priority_to_label <- stats::setNames(
 # A single library's own raw evidence must never display MORE confidence
 # than MetaMerge's own official call for that taxon (aDNA_support_status in
 # the summary table) -- otherwise the heatmap and the summary file disagree
-# about the same taxon. This was the A51-LBL-1 Homo sapiens case: the
+# about the same taxon. Example: a human-DNA taxon where the
 # summary correctly says "Blank-associated" (multimapping-driven damage fit
 # overridden by blank overlap), but the per-library label only ever checked
 # that library's own raw damage-support flag, so the plot still rendered a

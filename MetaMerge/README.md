@@ -195,7 +195,7 @@ metamerge report \
 
 Every `metamerge run` writes a wide-format CSV to
 `<outdir>/report_inputs/sample_order.csv`.  Each **column** is a plot group
-(e.g. `A51_sediments`, `NHB_bones`, `negative_controls`) and each **row**
+(e.g. `Site_sediments`, `Site_bones`, `negative_controls`) and each **row**
 within a column is a `plot_sample_id` in the order you want it to appear on
 the x-axis of every heatmap, damage heatmap, and stacked-bar plot.
 
