@@ -4,7 +4,7 @@
   <img src="../assets/MetaMerge.png" alt="TackleBox: MetaMerge header" width="700">
 </p>
 
-# MetaMerge v1.2.1
+# MetaMerge v1.3.0
 
 **MetaMerge** is a command-line tool for ensemble ancient-DNA classification.
 It merges a conservative **BLASTn → MEGAN7** taxon count matrix with
@@ -46,9 +46,32 @@ column naming conventions.
 | **Supported** | Exact Holi support or strong MEGAN counts or low-rank lineage-consistent damage support |
 | **Tentative** | Weak / incomplete DNA evidence; above the tentative-floor read count |
 | **Weak support** | Minimal non-control evidence; below the tentative floor |
-| **Blank-associated** | Substantial blank overlap relative to real-library counts |
+| **Blank-associated** | Substantial blank overlap relative to real-library counts, or a taxon that is not at least `blank_depth_fold_threshold` (default 10×) more concentrated, per million classified reads, in its best real library than in its best blank (depth-normalized check, v1.3.0) |
 
 "Blank-associated" always takes priority regardless of damage evidence.
+
+### What's new in v1.3.0
+
+- **Depth-normalized blank check.** Blanks are usually sequenced far more shallowly
+  than real samples, so a taxon can have a small raw count in a blank yet be
+  proportionally far more concentrated there than in any real library. Each
+  library's depth is its total MEGAN-classified reads (a column sum of the count
+  matrix; no extra input is needed). A taxon is flagged **Blank-associated**
+  whenever the reads-per-million of its best real library is less than
+  `blank_depth_fold_threshold` times (default 10) the reads-per-million of its best
+  blank. This check is applied in addition to the raw-count checks and acts as an
+  unconditional override: it takes priority over strong count support and over
+  exact damage support. Change the fold with `--blank-depth-fold-threshold FLOAT`;
+  turn the check off with `--disable-blank-depth-normalize`. Three columns are added
+  to the merged output: `real_rpm`, `blank_rpm` and `blank_caution_depth_normalized`.
+- **Control-handling toggles.** `--disable-environmental-control` folds
+  environmental controls (spiderwebs, washes, swabs, surface samples) into their
+  normal sample group instead of a separate `environmental_controls` group, and
+  `--negative-controls-with-samples` plots blanks on the same heatmap and stacked-bar
+  pages as the real samples they should be compared against.
+- **Report fixes.** A fixed legend column count keeps the stacked-bar legend from
+  squeezing the plot panel for taxon-rich groups, and a regular-expression escape
+  in plot sample-ID normalization is corrected.
 
 ---
 
